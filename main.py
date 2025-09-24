@@ -8,12 +8,6 @@ def main():
     snek_mint_addr = "addr1q9jsu6z9sedfksdrhkpmcgvcjf9m6vhd2wn3huxy0s8cwq7k2tc80wsaltznwlfpe7vncdkhcgngll32v22m3g80luvqxjahsf"
     batch_size = 10
 
-    # with ogmios.Client(
-    #     host="mainnet-v6.ogmios-m1.demeter.run",
-    #     additional_headers={"dmtr-api-key": "ogmios1xd67e5dvatg2kn3h4gl"},
-    #     secure=True,
-    #     port=443,
-    # ) as client:
     with ogmios.Client() as client:
         print("Connected to host")
         # event = {
@@ -29,12 +23,17 @@ def main():
         # Set chain pointer to origin
         # point, _, _ = client.find_intersection.execute([ogmios.Origin()])
 
+        # Last babbage block point
+        last_babbage_block = ogmios.Point(
+            slot=133660799,
+            id="e757d57eb8dc9500a61c60a39fadb63d9be6973ba96ae337fd24453d4d15c343",
+        )
         # Set chain pointer to the block before the mint of the SNEK token
         block_before_snek_mint = ogmios.Point(
             slot=90914081,
             id="2f7784ab8eee0e3d81223b9bd482195617cbee662ed6c412b123568251aac67a",
         )
-        point, _, _ = client.find_intersection.execute([block_before_snek_mint])
+        point, tip, _ = client.find_intersection.execute([block_before_snek_mint])
 
         txs_found = 0
         while True:
