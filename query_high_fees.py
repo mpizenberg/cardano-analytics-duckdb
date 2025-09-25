@@ -69,7 +69,7 @@ def query_high_fee_transactions(min_fee_ada: float = 2.0):
         """
 
         summary = conn.execute(summary_query).fetchdf()
-        print(f"\nOverall transaction fee statistics:")
+        print("\nOverall transaction fee statistics:")
         print(summary.to_string(index=False))
 
         # High-fee transaction statistics
@@ -107,7 +107,7 @@ def query_high_fee_transactions(min_fee_ada: float = 2.0):
         """
 
         fee_dist = conn.execute(fee_distribution_query).fetchdf()
-        print(f"\nTransaction fee distribution:")
+        print("\nTransaction fee distribution:")
         print(fee_dist.to_string(index=False))
 
     except Exception as e:

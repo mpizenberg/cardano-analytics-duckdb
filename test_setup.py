@@ -174,23 +174,24 @@ def test_configuration():
     try:
         from config import (
             get_default_config,
-            get_high_fee_config,
+            get_performance_config,
             PRESET_STARTING_POINTS,
         )
 
         # Test default config
         config = get_default_config()
         assert config.batch_size == 10
-        assert config.buffer_size == 1000
+        assert config.buffer_size_slots == 1000
         print("✓ Default configuration loaded")
 
-        # Test high-fee config
-        high_fee_config = get_high_fee_config(5.0)
-        assert high_fee_config.min_fee_ada == 5.0
-        print("✓ High-fee configuration loaded")
+        # Test performance config
+        performance_config = get_performance_config()
+        assert performance_config.batch_size == 25
+        print("✓ Performance configuration loaded")
 
         # Test preset starting points
         assert "snek_mint" in PRESET_STARTING_POINTS
+        assert "last_byron" in PRESET_STARTING_POINTS
         print("✓ Preset starting points available")
 
         return True

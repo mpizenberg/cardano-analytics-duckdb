@@ -11,8 +11,7 @@ from pathlib import Path
 from config import (
     ExtractionConfig,
     get_default_config,
-    get_high_fee_config,
-    get_address_focused_config,
+    get_performance_config,
     PRESET_STARTING_POINTS,
     KNOWN_ADDRESSES,
 )
@@ -36,30 +35,27 @@ This will:
 - Process blocks in batches of 10
 - Save data to 'duckdb/' directory
 - Organize files by slot groups of 10,000 slots
-- Save transactions to parquet files every 1,000 transactions
+- Save transactions to parquet files every 1,000 slots
     """)
 
 
-def example_high_fee_extraction():
-    """Example: Extract only high-fee transactions."""
+def example_performance_extraction():
+    """Example: Performance optimized extraction."""
     print("=" * 50)
-    print("Example 2: High-Fee Transaction Extraction")
+    print("Example 2: Performance Optimized Extraction")
     print("=" * 50)
 
     print("""
-This example shows how to extract only transactions with fees above 2 ADA.
+This example shows how to optimize extraction for better performance.
 
 Command:
-    python main.py extract --config high-fee
-
-Or with custom minimum fee:
-    python main.py extract --min-fee 5.0
+    python main.py extract --config performance
 
 This will:
-- Only extract transactions with fees >= 2 ADA (or specified amount)
-- Use optimized batch and buffer sizes for filtering
-- Significantly reduce storage requirements
-- Focus on potentially interesting high-value transactions
+- Use larger batch sizes for better throughput
+- Optimize buffer sizes for performance
+- Use settings tuned for faster processing
+- Ideal for processing large amounts of data
     """)
 
 
@@ -73,20 +69,21 @@ def example_custom_extraction():
 This example shows how to customize the extraction process.
 
 Command:
-    python main.py extract --start-point shelley_era --batch-size 25 --buffer-size 2000
+    python main.py extract --start-point last_shelley --batch-size 25 --buffer-size-slots 2000
 
 Available starting points:
-- shelley_era: Beginning of Shelley era
-- mary_era: Beginning of Mary era (multi-asset support)
-- alonzo_era: Beginning of Alonzo era (smart contracts)
-- babbage_era: Beginning of Babbage era (current era)
+- last_byron: Last block before Shelley era
+- last_shelley: Last block before Allegra era
+- last_allegra: Last block before Mary era
+- last_mary: Last block before Alonzo era
+- last_alonzo: Last block before Babbage era
+- last_babbage: Last block before Conway era
 - snek_mint: Block before SNEK token mint
-- recent: Recent block for testing
 
 This allows you to:
 - Start from any major era in Cardano's history
 - Adjust batch size for your hardware/network capacity
-- Control memory usage with buffer sizes
+- Control temporal buffer sizes in slots
     """)
 
 
@@ -144,36 +141,42 @@ conn.close()
     ''')
 
 
-def example_address_focused_analysis():
-    """Example: Focus on specific addresses."""
+def example_custom_slot_groups():
+    """Example: Custom slot group configurations."""
     print("=" * 50)
-    print("Example 5: Address-Focused Analysis")
+    print("Example 5: Custom Slot Group Configuration")
     print("=" * 50)
 
     print(f"""
-This example shows how to analyze transactions involving specific addresses.
+This example shows how to configure slot groups and buffer sizes.
 
-Known addresses available:
+Known addresses for reference:
 """)
 
     for name, addr in KNOWN_ADDRESSES.items():
         print(f"- {name}: {addr}")
 
     print("""
-To create a custom extraction focusing on specific addresses:
+To create custom slot grouping:
     """)
 
     print("""
-from config import get_address_focused_config
+# Large slot groups for historical analysis
+python main.py extract --slot-group-size 50000 --buffer-size-slots 5000
+
+# Small slot groups for detailed analysis
+python main.py extract --slot-group-size 1000 --buffer-size-slots 100
+
+# Custom configuration programmatically:
+from config import ExtractionConfig
 from main import main
 
-# Focus on Minswap and SundaeSwap addresses
-target_addresses = [
-    "addr1zxn9efv2f6w82hagxqtn62ju4m293tqvw0uhmdl64ch8uw6j2c79gy9l76sdg0xwhd7r0c0kna0tycz4y5s6mlenh8pq6s3z70",  # Minswap
-    "addr1w9qzpelu9hn45pefc0xr4ac4kdxeswq7pndul2vuj59u8tqaxdznu"   # SundaeSwap
-]
+config = ExtractionConfig(
+    slot_group_size=25000,  # 25k slots per directory
+    buffer_size_slots=2500, # Save every 2.5k slots
+    batch_size=15
+)
 
-config = get_address_focused_config(target_addresses)
 main(config)
     """)
 
@@ -200,8 +203,7 @@ config = ExtractionConfig(
         id="2f7784ab8eee0e3d81223b9bd482195617cbee662ed6c412b123568251aac67a"
     ),
     batch_size=20,
-    buffer_size=500,
-    min_fee_ada=1.0,  # Only extract transactions with fees >= 1 ADA
+    buffer_size_slots=500,
     output_dir="my_custom_data",
     progress_interval=50
 )
@@ -383,10 +385,10 @@ def main():
 
     examples = [
         example_basic_extraction,
-        example_high_fee_extraction,
+        example_performance_extraction,
         example_custom_extraction,
         example_querying_data,
-        example_address_focused_analysis,
+        example_custom_slot_groups,
         example_programmatic_usage,
         example_analyzing_fee_trends,
         example_complex_queries,

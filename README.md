@@ -80,35 +80,36 @@ Each directory contains transactions for a group of 10,000 slots, making it easy
 python main.py extract
 
 # Extract from a specific era
-python main.py extract --start-point shelley_era
-python main.py extract --start-point alonzo_era
+python main.py extract --start-point last_shelley
+python main.py extract --start-point last_alonzo
 ```
 
-#### High-Fee Extraction
+#### Performance Extraction
 ```bash
-# Extract only transactions with fees > 2 ADA
-python main.py extract --config high-fee
-
-# Extract transactions with fees > 5 ADA
-python main.py extract --min-fee 5.0
-```
-
-#### Custom Extraction
-```bash
-# Custom batch and buffer sizes for performance tuning
-python main.py extract --batch-size 25 --buffer-size 2000
+# Extract with performance optimizations
+python main.py extract --config performance
 
 # Full blockchain history (warning: large dataset!)
 python main.py extract --config full-history
 ```
 
+#### Custom Extraction
+```bash
+# Custom batch and buffer sizes for performance tuning
+python main.py extract --batch-size 25 --buffer-size-slots 2000
+
+# Custom slot group size
+python main.py extract --slot-group-size 50000
+```
+
 #### Available Starting Points
-- `shelley_era`: Beginning of Shelley era (slot 4492800)
-- `mary_era`: Beginning of Mary era - multi-asset support (slot 16588800)
-- `alonzo_era`: Beginning of Alonzo era - smart contracts (slot 39916975)
-- `babbage_era`: Beginning of Babbage era - current era (slot 72316896)
+- `last_byron`: Last block before Shelley era (slot 4492799)
+- `last_shelley`: Last block before Allegra era (slot 16588737)
+- `last_allegra`: Last block before Mary era (slot 23068793)
+- `last_mary`: Last block before Alonzo era (slot 39916796)
+- `last_alonzo`: Last block before Babbage era (slot 72316796)
+- `last_babbage`: Last block before Conway era (slot 133660799)
 - `snek_mint`: Block before SNEK token mint (slot 90914081) - **default**
-- `recent`: Recent block for testing (slot 133660799)
 
 ### Data Analysis and Querying
 
@@ -161,14 +162,14 @@ conn.close()
 #### Programmatic Usage
 
 ```python
-from config import ExtractionConfig, get_high_fee_config
+from config import ExtractionConfig, get_performance_config
 from main import main
 
 # Custom configuration
 config = ExtractionConfig(
-    min_fee_ada=1.0,
     batch_size=20,
-    buffer_size=500,
+    buffer_size_slots=500,
+    slot_group_size=25000,
     output_dir="custom_data"
 )
 
@@ -208,29 +209,30 @@ The system enables various types of analysis:
 
 ## Advanced Usage
 
-### Address-Focused Analysis
+### Custom Slot Group Configuration
 
-Extract transactions involving specific addresses:
+Configure slot groups and buffer sizes for different use cases:
 
 ```python
-from config import get_address_focused_config, KNOWN_ADDRESSES
+from config import ExtractionConfig, KNOWN_ADDRESSES
 from main import main
 
-# Use predefined addresses (DEX addresses, etc.)
-target_addresses = [
-    KNOWN_ADDRESSES["minswap_v1"],
-    KNOWN_ADDRESSES["sundaeswap_v1"]
-]
+# Large slot groups for historical analysis
+config = ExtractionConfig(
+    slot_group_size=50000,
+    buffer_size_slots=5000,
+    batch_size=25
+)
 
-config = get_address_focused_config(target_addresses)
 main(config)
 ```
 
 ### Performance Tuning
 
 - **Batch size**: Increase for better throughput (10-50)
-- **Buffer size**: Adjust based on available memory (500-5000)
-- **Slot group size**: Larger groups for historical data analysis (default: 10,000)
+- **Buffer size (slots)**: Adjust based on temporal granularity (500-5000 slots)
+- **Slot group size**: Larger groups for historical data analysis (default: 10,000 slots)
+- **Buffer and slot group relationship**: Ensure buffer_size_slots < slot_group_size
 
 ### Monitoring Progress
 
@@ -245,16 +247,18 @@ The system provides progress updates showing:
 ### Common Issues
 
 1. **Ogmios connection failed**: Ensure Ogmios is running and accessible
-2. **Out of memory**: Reduce batch size and buffer size
+2. **Out of memory**: Reduce batch size and buffer_size_slots
 3. **Disk space**: Monitor the `duckdb/` directory size
 4. **Import errors**: Run `python test_setup.py` to verify setup
+5. **Buffer configuration**: Ensure buffer_size_slots < slot_group_size
 
 ### Performance Tips
 
 - Use SSD storage for better I/O performance
-- Increase buffer sizes if you have sufficient RAM
-- Use fee filtering to reduce dataset size
+- Increase buffer_size_slots for fewer file operations
+- Balance slot_group_size with query patterns (larger groups = fewer files)
 - Consider running extraction in stages (by era)
+- Use the performance config for optimized settings
 
 ## Examples and Tutorials
 
@@ -266,6 +270,7 @@ python examples.py
 
 # View specific example
 python examples.py 1  # Basic extraction
+python examples.py 2  # Performance extraction
 python examples.py 4  # Querying data
 python examples.py 7  # Fee trend analysis
 ```
@@ -273,11 +278,12 @@ python examples.py 7  # Fee trend analysis
 ## Future Enhancements
 
 - Real-time data streaming for ongoing analysis
-- Support for filtering by specific tokens/assets
+- Post-processing filters for specific tokens/assets/addresses
 - Address clustering and analysis
 - Visualization dashboards for fee trends
 - Integration with other Cardano analytics tools
 - Support for custom fee calculation algorithms
+- Parallel processing for multiple slot ranges
 
 ## Dependencies
 

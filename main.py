@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Optional
 from config import (
     ExtractionConfig,
     get_default_config,
-    get_high_fee_config,
+    get_performance_config,
     PRESET_STARTING_POINTS,
 )
 
@@ -16,10 +16,8 @@ def get_slot_group_directory(slot: int, group_size: int = 10000) -> str:
     return f"slot_{group * group_size}_{(group + 1) * group_size - 1}"
 
 
-def extract_transaction_data(
-    tx: Dict[str, Any], slot: int, config: ExtractionConfig
-) -> Optional[Dict[str, Any]]:
-    """Extract relevant data from a transaction, applying filters."""
+def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
+    """Extract relevant data from a transaction."""
     tx_id = tx.get("id", "")
     tx_fee = tx.get("fee", {}).get("ada", {}).get("lovelace", 0)
     tx_fee_ada = tx_fee / 1_000_000
@@ -39,17 +37,6 @@ def extract_transaction_data(
             address = output.get("address", "")
             if address:
                 output_addresses.append(address)
-
-    # Apply fee filter if specified
-    if config.min_fee_ada and tx_fee_ada < config.min_fee_ada:
-        return None
-
-    # Apply address filter if specified
-    if config.target_addresses:
-        all_addresses = output_addresses.copy()
-        # Add input addresses by checking transaction inputs (simplified)
-        if not any(addr in all_addresses for addr in config.target_addresses):
-            return None
 
     return {
         "slot": slot,
@@ -101,15 +88,14 @@ def main(config: Optional[ExtractionConfig] = None):
 
     print("Starting Cardano fee analytics data extraction...")
     print(
-        f"Configuration: batch_size={config.batch_size}, buffer_size={config.buffer_size}"
+        f"Configuration: batch_size={config.batch_size}, buffer_size_slots={config.buffer_size_slots}"
     )
     print(f"Output directory: {config.output_dir}")
-    if config.min_fee_ada:
-        print(f"Fee filter: Only transactions with fees >= {config.min_fee_ada} ADA")
-    if config.target_addresses:
-        print(f"Address filter: {len(config.target_addresses)} target addresses")
+    print(f"Slot group size: {config.slot_group_size}")
 
+    # Track transactions by slot group
     transactions_buffer = {}  # slot_group -> list of transactions
+    last_buffer_save_slot = {}  # slot_group -> last slot when buffer was saved
 
     with ogmios.Client(host=config.ogmios_host, port=config.ogmios_port) as client:
         print("Connected to Ogmios client")
@@ -150,30 +136,28 @@ def main(config: Optional[ExtractionConfig] = None):
                         )
 
                         for tx in block.transactions:
-                            tx_data = extract_transaction_data(tx, current_slot, config)
+                            tx_data = extract_transaction_data(tx, current_slot)
                             total_txs_processed += 1
-
-                            # Skip if transaction doesn't match filters
-                            if tx_data is None:
-                                continue
 
                             # Add to buffer for this slot group
                             if slot_group_dir not in transactions_buffer:
                                 transactions_buffer[slot_group_dir] = []
+                                last_buffer_save_slot[slot_group_dir] = current_slot
 
                             transactions_buffer[slot_group_dir].append(tx_data)
 
-                            # Save to parquet if buffer is full
-                            if (
-                                len(transactions_buffer[slot_group_dir])
-                                >= config.buffer_size
-                            ):
+                            # Check if buffer should be saved based on slot difference
+                            slots_since_last_save = (
+                                current_slot - last_buffer_save_slot[slot_group_dir]
+                            )
+                            if slots_since_last_save >= config.buffer_size_slots:
                                 save_transactions_to_parquet(
                                     transactions_buffer[slot_group_dir],
                                     slot_group_dir,
                                     config,
                                 )
                                 transactions_buffer[slot_group_dir] = []
+                                last_buffer_save_slot[slot_group_dir] = current_slot
 
                     # Stop when we've reached the network tip
                     if tip.height == block.height:
@@ -240,7 +224,7 @@ def query_high_fee_transactions():
         """
 
         summary = conn.execute(summary_query).fetchdf()
-        print(f"\nSummary of high-fee transactions (> 2 ADA):")
+        print("Summary of high-fee transactions (> 2 ADA):")
         print(summary.to_string(index=False))
 
     except Exception as e:
@@ -265,12 +249,9 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--config",
-        choices=["default", "high-fee", "full-history"],
+        choices=["default", "performance", "full-history"],
         default="default",
         help="Configuration preset to use",
-    )
-    parser.add_argument(
-        "--min-fee", type=float, help="Minimum fee in ADA for extraction"
     )
     parser.add_argument(
         "--start-point",
@@ -279,7 +260,12 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch-size", type=int, help="Batch size for processing")
     parser.add_argument(
-        "--buffer-size", type=int, help="Buffer size before writing to parquet"
+        "--buffer-size-slots",
+        type=int,
+        help="Buffer size in slots before writing to parquet",
+    )
+    parser.add_argument(
+        "--slot-group-size", type=int, help="Number of slots per directory group"
     )
 
     args = parser.parse_args()
@@ -288,8 +274,8 @@ if __name__ == "__main__":
         query_high_fee_transactions()
     else:
         # Set up configuration based on arguments
-        if args.config == "high-fee":
-            config = get_high_fee_config(args.min_fee or 2.0)
+        if args.config == "performance":
+            config = get_performance_config()
         elif args.config == "full-history":
             from config import get_full_history_config
 
@@ -298,13 +284,13 @@ if __name__ == "__main__":
             config = get_default_config()
 
         # Override config with command line arguments
-        if args.min_fee:
-            config.min_fee_ada = args.min_fee
         if args.start_point:
             config.start_point = PRESET_STARTING_POINTS[args.start_point]
         if args.batch_size:
             config.batch_size = args.batch_size
-        if args.buffer_size:
-            config.buffer_size = args.buffer_size
+        if args.buffer_size_slots:
+            config.buffer_size_slots = args.buffer_size_slots
+        if args.slot_group_size:
+            config.slot_group_size = args.slot_group_size
 
         main(config)
