@@ -2,6 +2,7 @@ import ogmios
 import pandas as pd
 from pathlib import Path
 from typing import List, Dict, Any
+from tqdm import tqdm
 from config import (
     ExtractionConfig,
     PRESET_STARTING_POINTS,
@@ -69,21 +70,21 @@ def save_transactions_to_parquet(
         # Remove duplicates based on tx_id
         combined_df = combined_df.drop_duplicates(subset=["tx_id"], keep="last")
         combined_df.to_parquet(parquet_file, index=False)
-        print(
+        tqdm.write(
             f"Appended {len(df)} transactions to {parquet_file} (total: {len(combined_df)})"
         )
     else:
         df.to_parquet(parquet_file, index=False)
-        print(f"Created {parquet_file} with {len(df)} transactions")
+        tqdm.write(f"Created {parquet_file} with {len(df)} transactions")
 
 
 def main(config: ExtractionConfig):
-    print("Starting Cardano fee analytics data extraction...")
-    print(
+    tqdm.write("Starting Cardano fee analytics data extraction...")
+    tqdm.write(
         f"Configuration: batch_size={config.batch_size}, buffer_size_slots={config.buffer_size_slots}"
     )
-    print(f"Output directory: {config.output_dir}")
-    print(f"Slot group size: {config.slot_group_size}")
+    tqdm.write(f"Output directory: {config.output_dir}")
+    tqdm.write(f"Slot group size: {config.slot_group_size}")
 
     # Track transactions by slot group
     transactions_buffer = {}  # slot_group -> list of transactions
@@ -102,96 +103,138 @@ def main(config: ExtractionConfig):
         return flushed_count
 
     with ogmios.Client(host=config.ogmios_host, port=config.ogmios_port) as client:
-        print("Connected to Ogmios client")
+        tqdm.write("Connected to Ogmios client")
 
         # Set chain pointer based on configuration
         if config.start_point:
             point, tip, _ = client.find_intersection.execute([config.start_point])
-            print(f"Starting from slot {point.slot}")
+            tqdm.write(f"Starting from slot {point.slot}")
+            start_slot = point.slot
         else:
-            print("No starting point specified, using chain tip")
+            tqdm.write("No starting point specified, using chain tip")
             point, tip, _ = client.find_intersection.execute([ogmios.Origin()])
+            start_slot = tip.slot
+
+        # Calculate total slots for progress tracking
+        stop_slot = (
+            min(config.stop_point.slot, tip.slot) if config.stop_point else tip.slot
+        )
+        total_slots = stop_slot - start_slot if start_slot else stop_slot
+
+        # Initialize progress bar
+        pbar = tqdm(
+            total=total_slots,
+            desc="Processing blocks",
+            unit="slots",
+            position=0,
+            leave=True,
+            bar_format="{desc}: {percentage:3.1f}%|{bar}| {n:,}/{total:,} slots [{elapsed}<{remaining}, {rate_fmt}]",
+        )
 
         total_txs_processed = 0
         blocks_processed = 0
+        current_slot = start_slot
 
-        while True:
-            # Batch requests to improve performance
-            for i in range(config.batch_size):
-                client.next_block.send()
+        try:
+            while True:
+                # Batch requests to improve performance
+                for i in range(config.batch_size):
+                    client.next_block.send()
 
-            for i in range(config.batch_size):
-                direction, tip, block, id = client.next_block.receive()
-                if direction.value == "forward":
-                    blocks_processed += 1
-                    current_slot = getattr(block, "slot", 0)
+                for i in range(config.batch_size):
+                    direction, tip, block, id = client.next_block.receive()
+                    if direction.value == "forward":
+                        blocks_processed += 1
+                        current_slot = getattr(block, "slot", 0)
 
-                    if blocks_processed % config.progress_interval == 0:
-                        print(
-                            f"Processed {blocks_processed} blocks, current slot: {current_slot}, total txs: {total_txs_processed}"
-                        )
-
-                    # Process transactions in the block
-                    if isinstance(block, ogmios.Block) and hasattr(
-                        block, "transactions"
-                    ):
-                        slot_group_dir = get_slot_group_directory(
-                            current_slot, config.slot_group_size
-                        )
-
-                        for tx in block.transactions:
-                            tx_data = extract_transaction_data(tx, current_slot)
-                            total_txs_processed += 1
-
-                            # Add to buffer for this slot group
-                            if slot_group_dir not in transactions_buffer:
-                                transactions_buffer[slot_group_dir] = []
-
-                            transactions_buffer[slot_group_dir].append(tx_data)
-
-                            # Check if we should flush all buffers based on slot difference
-                            slots_since_last_flush = (
-                                current_slot - last_buffer_flush_slot
-                            )
-                            if slots_since_last_flush >= config.buffer_size_slots:
-                                flush_all_buffers(current_slot)
-                                transactions_buffer = {}
-
-                    # Stop when we've reached the network tip
-                    stop_point = (
-                        min(config.stop_point.slot, tip.slot)
-                        if config.stop_point
-                        else tip.slot
-                    )
-                    if block.slot >= stop_point:
-                        if tip.height == block.height:
-                            print(f"Reached chain tip at slot {tip.slot}")
-                        else:
-                            print(f"Reached stop point at slot {stop_point}")
-                        # Save any remaining transactions in buffers
-                        remaining_count = flush_all_buffers(current_slot)
-                        if remaining_count > 0:
-                            print(
-                                f"Flushed {remaining_count} remaining transactions at stop point"
+                        # Process transactions in the block
+                        if isinstance(block, ogmios.Block) and hasattr(
+                            block, "transactions"
+                        ):
+                            slot_group_dir = get_slot_group_directory(
+                                current_slot, config.slot_group_size
                             )
 
-                        print(
-                            f"Data extraction complete. Total transactions processed: {total_txs_processed}"
-                        )
-                        print(
-                            f"Data saved in {config.output_dir}/ directory organized by slot groups"
-                        )
-                        return
+                            for tx in block.transactions:
+                                tx_data = extract_transaction_data(tx, current_slot)
+                                total_txs_processed += 1
 
-                elif direction.value == "backward":
-                    print("Encountered rollback, continuing...")
+                                # Add to buffer for this slot group
+                                if slot_group_dir not in transactions_buffer:
+                                    transactions_buffer[slot_group_dir] = []
+
+                                transactions_buffer[slot_group_dir].append(tx_data)
+
+                                # Check if we should flush all buffers based on slot difference
+                                slots_since_last_flush = (
+                                    current_slot - last_buffer_flush_slot
+                                )
+                                if slots_since_last_flush >= config.buffer_size_slots:
+                                    flushed_count = flush_all_buffers(current_slot)
+                                    transactions_buffer = {}
+                                    # Update progress bar only when flushing buffers
+                                    slots_progress = current_slot - start_slot
+                                    pbar.n = min(slots_progress, total_slots)
+                                    pbar.set_postfix(
+                                        {
+                                            "blocks": f"{blocks_processed:,}",
+                                            "txs": f"{total_txs_processed:,}",
+                                            "slot": f"{current_slot:,}",
+                                            "flushed": f"{flushed_count:,}",
+                                        }
+                                    )
+                                    pbar.refresh()
+
+                        # Stop when we've reached the network tip
+                        stop_point = (
+                            min(config.stop_point.slot, tip.slot)
+                            if config.stop_point
+                            else tip.slot
+                        )
+                        if block.slot >= stop_point:
+                            # Final progress bar update
+                            slots_progress = current_slot - start_slot
+                            pbar.n = min(slots_progress, total_slots)
+                            pbar.set_postfix(
+                                {
+                                    "blocks": f"{blocks_processed:,}",
+                                    "txs": f"{total_txs_processed:,}",
+                                    "slot": f"{current_slot:,}",
+                                }
+                            )
+                            pbar.refresh()
+                            pbar.close()
+                            if tip.height == block.height:
+                                tqdm.write(f"Reached chain tip at slot {tip.slot}")
+                            else:
+                                tqdm.write(f"Reached stop point at slot {stop_point}")
+                            # Save any remaining transactions in buffers
+                            remaining_count = flush_all_buffers(current_slot)
+                            if remaining_count > 0:
+                                tqdm.write(
+                                    f"Flushed {remaining_count} remaining transactions at stop point"
+                                )
+
+                            tqdm.write(
+                                f"Data extraction complete. Total transactions processed: {total_txs_processed:,}"
+                            )
+                            tqdm.write(
+                                f"Data saved in {config.output_dir}/ directory organized by slot groups"
+                            )
+                            return
+
+                    elif direction.value == "backward":
+                        tqdm.write("Encountered rollback, continuing...")
+        finally:
+            # Ensure progress bar is closed even if an exception occurs
+            pbar.close()
 
 
 def query_high_fee_transactions():
     """Query transactions with fees > 2 ADA using DuckDB."""
     import duckdb
 
-    print("\nQuerying transactions with fees > 2 ADA...")
+    tqdm.write("\nQuerying transactions with fees > 2 ADA...")
 
     # Connect to DuckDB
     conn = duckdb.connect()
@@ -212,10 +255,10 @@ def query_high_fee_transactions():
 
     try:
         result = conn.execute(query).fetchdf()
-        print(f"Found {len(result)} transactions with fees > 2 ADA")
+        tqdm.write(f"Found {len(result)} transactions with fees > 2 ADA")
         if len(result) > 0:
-            print("\nTop high-fee transactions:")
-            print(result.to_string(index=False))
+            tqdm.write("\nTop high-fee transactions:")
+            tqdm.write(result.to_string(index=False))
 
         # Summary statistics
         summary_query = """
@@ -229,12 +272,14 @@ def query_high_fee_transactions():
         """
 
         summary = conn.execute(summary_query).fetchdf()
-        print("Summary of high-fee transactions (> 2 ADA):")
-        print(summary.to_string(index=False))
+        tqdm.write("Summary of high-fee transactions (> 2 ADA):")
+        tqdm.write(summary.to_string(index=False))
 
     except Exception as e:
-        print(f"Error querying data: {e}")
-        print("Make sure to run the data extraction first to create the parquet files.")
+        tqdm.write(f"Error querying data: {e}")
+        tqdm.write(
+            "Make sure to run the data extraction first to create the parquet files."
+        )
 
     conn.close()
 

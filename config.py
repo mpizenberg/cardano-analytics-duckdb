@@ -27,9 +27,6 @@ class ExtractionConfig:
     # Output directory
     output_dir: str = "duckdb"
 
-    # Progress reporting
-    progress_interval: int = 1000  # Report progress every N blocks
-
 
 # Predefined starting points - last block before each era
 PRESET_STARTING_POINTS = {
