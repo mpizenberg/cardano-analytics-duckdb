@@ -7,53 +7,6 @@ import sys
 from pathlib import Path
 
 
-def test_imports():
-    """Test that all required modules can be imported."""
-    print("Testing imports...")
-
-    try:
-        import pandas as pd
-
-        print("✓ pandas imported successfully")
-    except ImportError as e:
-        print(f"✗ Failed to import pandas: {e}")
-        return False
-
-    try:
-        import pyarrow
-
-        print("✓ pyarrow imported successfully")
-    except ImportError as e:
-        print(f"✗ Failed to import pyarrow: {e}")
-        return False
-
-    try:
-        import duckdb
-
-        print("✓ duckdb imported successfully")
-    except ImportError as e:
-        print(f"✗ Failed to import duckdb: {e}")
-        return False
-
-    try:
-        import ogmios
-
-        print("✓ ogmios imported successfully")
-    except ImportError as e:
-        print(f"✗ Failed to import ogmios: {e}")
-        return False
-
-    try:
-        from config import ExtractionConfig, get_default_config
-
-        print("✓ config module imported successfully")
-    except ImportError as e:
-        print(f"✗ Failed to import config: {e}")
-        return False
-
-    return True
-
-
 def test_directory_structure():
     """Test that required directories can be created."""
     print("\nTesting directory structure...")
@@ -150,7 +103,7 @@ def test_duckdb_query():
             WHERE tx_fee_ada > 2.0
         """).fetchone()
 
-        assert result[0] == 1, f"Expected 1 high-fee transaction, got {result[0]}"
+        assert result[0] == 1, f"Expected 1 high-fee transaction, got {result[0]}"  # type: ignore
         print("✓ DuckDB query executed successfully")
 
         conn.close()
@@ -167,51 +120,15 @@ def test_duckdb_query():
         return False
 
 
-def test_configuration():
-    """Test configuration system."""
-    print("\nTesting configuration system...")
-
-    try:
-        from config import (
-            get_default_config,
-            get_performance_config,
-            PRESET_STARTING_POINTS,
-        )
-
-        # Test default config
-        config = get_default_config()
-        assert config.batch_size == 10
-        assert config.buffer_size_slots == 1000
-        print("✓ Default configuration loaded")
-
-        # Test performance config
-        performance_config = get_performance_config()
-        assert performance_config.batch_size == 25
-        print("✓ Performance configuration loaded")
-
-        # Test preset starting points
-        assert "snek_mint" in PRESET_STARTING_POINTS
-        assert "last_byron" in PRESET_STARTING_POINTS
-        print("✓ Preset starting points available")
-
-        return True
-
-    except Exception as e:
-        print(f"✗ Configuration system failed: {e}")
-        return False
-
-
 def main():
     """Run all tests."""
     print("Fee Analytics Setup Test")
     print("=" * 40)
 
     tests = [
-        test_imports,
         test_directory_structure,
         test_parquet_operations,
         test_duckdb_query,
-        test_configuration,
     ]
 
     passed = 0
@@ -222,9 +139,9 @@ def main():
             if test():
                 passed += 1
             else:
-                print(f"✗ {test.__name__} failed")
+                print(f"✗ {test.__name__} failed")  # type: ignore
         except Exception as e:
-            print(f"✗ {test.__name__} crashed: {e}")
+            print(f"✗ {test.__name__} crashed: {e}")  # type: ignore
 
     print("\n" + "=" * 40)
     print(f"Results: {passed}/{total} tests passed")

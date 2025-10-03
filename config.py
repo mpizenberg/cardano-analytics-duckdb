@@ -1,5 +1,5 @@
 import ogmios
-from typing import Optional, List
+from typing import Optional
 from dataclasses import dataclass
 
 
@@ -11,15 +11,16 @@ class ExtractionConfig:
     ogmios_host: str = "localhost"
     ogmios_port: int = 1337
 
-    # Starting point for extraction
+    # Starting and stopping point for extraction
     start_point: Optional[ogmios.Point] = None
+    stop_point: Optional[ogmios.Point] = None
 
     # Batch processing settings
-    batch_size: int = 10
-    buffer_size_slots: int = 1000  # Save to parquet every N slots per slot group
+    batch_size: int = 100
+    buffer_size_slots: int = 10000  # Save to parquet every N slots per slot group
 
     # Slot grouping (slots per directory)
-    slot_group_size: int = 10000
+    slot_group_size: int = 100000
 
     # Output directory
     output_dir: str = "duckdb"
@@ -59,39 +60,6 @@ PRESET_STARTING_POINTS = {
         id="2f7784ab8eee0e3d81223b9bd482195617cbee662ed6c412b123568251aac67a",
     ),
 }
-
-
-def get_default_config() -> ExtractionConfig:
-    """Get default configuration for data extraction."""
-    return ExtractionConfig(
-        start_point=PRESET_STARTING_POINTS["snek_mint"],
-        batch_size=10,
-        buffer_size_slots=1000,
-        slot_group_size=10000,
-        progress_interval=100,
-    )
-
-
-def get_performance_config() -> ExtractionConfig:
-    """Get configuration optimized for performance."""
-    return ExtractionConfig(
-        start_point=PRESET_STARTING_POINTS["snek_mint"],
-        batch_size=25,
-        buffer_size_slots=2000,
-        slot_group_size=10000,
-        progress_interval=200,
-    )
-
-
-def get_full_history_config() -> ExtractionConfig:
-    """Get configuration for extracting full blockchain history."""
-    return ExtractionConfig(
-        start_point=PRESET_STARTING_POINTS["last_byron"],
-        batch_size=20,
-        buffer_size_slots=5000,
-        slot_group_size=50000,  # Larger groups for historical data
-        progress_interval=500,
-    )
 
 
 # Common Cardano addresses for reference

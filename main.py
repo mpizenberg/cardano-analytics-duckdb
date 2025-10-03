@@ -1,11 +1,9 @@
 import ogmios
 import pandas as pd
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 from config import (
     ExtractionConfig,
-    get_default_config,
-    get_performance_config,
     PRESET_STARTING_POINTS,
 )
 
@@ -20,7 +18,6 @@ def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
     """Extract relevant data from a transaction."""
     tx_id = tx.get("id", "")
     tx_fee = tx.get("fee", {}).get("ada", {}).get("lovelace", 0)
-    tx_fee_ada = tx_fee / 1_000_000
 
     # Extract inputs (tx_id + output_index)
     inputs = []
@@ -41,8 +38,7 @@ def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
     return {
         "slot": slot,
         "tx_id": tx_id,
-        "tx_fee_lovelace": tx_fee,
-        "tx_fee_ada": tx_fee_ada,
+        "tx_fee": tx_fee,
         "inputs": "|".join(inputs),  # Join with pipe separator for easy parsing
         "output_addresses": "|".join(output_addresses),  # Join with pipe separator
         "num_inputs": len(inputs),
@@ -81,11 +77,7 @@ def save_transactions_to_parquet(
         print(f"Created {parquet_file} with {len(df)} transactions")
 
 
-def main(config: Optional[ExtractionConfig] = None):
-    """Main extraction function with configurable parameters."""
-    if config is None:
-        config = get_default_config()
-
+def main(config: ExtractionConfig):
     print("Starting Cardano fee analytics data extraction...")
     print(
         f"Configuration: batch_size={config.batch_size}, buffer_size_slots={config.buffer_size_slots}"
@@ -160,8 +152,16 @@ def main(config: Optional[ExtractionConfig] = None):
                                 last_buffer_save_slot[slot_group_dir] = current_slot
 
                     # Stop when we've reached the network tip
-                    if tip.height == block.height:
-                        print(f"Reached chain tip at slot {tip.slot}")
+                    stop_point = (
+                        min(config.stop_point.slot, tip.slot)
+                        if config.stop_point
+                        else tip.slot
+                    )
+                    if block.slot >= stop_point:
+                        if tip.height == block.height:
+                            print(f"Reached chain tip at slot {tip.slot}")
+                        else:
+                            print(f"Reached stop point at slot {stop_point}")
                         # Save any remaining transactions in buffers
                         for slot_group_dir, txs in transactions_buffer.items():
                             if txs:
@@ -195,13 +195,12 @@ def query_high_fee_transactions():
     SELECT
         slot,
         tx_id,
-        tx_fee_ada,
-        tx_fee_lovelace,
+        tx_fee,
         num_inputs,
         num_outputs
     FROM read_parquet('duckdb/*/tx.parquet')
-    WHERE tx_fee_ada > 2.0
-    ORDER BY tx_fee_ada DESC
+    WHERE tx_fee > 2000000
+    ORDER BY tx_fee DESC
     LIMIT 100;
     """
 
@@ -216,11 +215,11 @@ def query_high_fee_transactions():
         summary_query = """
         SELECT
             COUNT(*) as total_high_fee_txs,
-            AVG(tx_fee_ada) as avg_fee_ada,
-            MAX(tx_fee_ada) as max_fee_ada,
-            MIN(tx_fee_ada) as min_fee_ada
+            AVG(tx_fee) as avg_fee,
+            MAX(tx_fee) as max_fee,
+            MIN(tx_fee) as min_fee
         FROM read_parquet('duckdb/*/tx.parquet')
-        WHERE tx_fee_ada > 2.0;
+        WHERE tx_fee > 2000000;
         """
 
         summary = conn.execute(summary_query).fetchdf()
@@ -258,6 +257,11 @@ if __name__ == "__main__":
         choices=list(PRESET_STARTING_POINTS.keys()),
         help="Starting point for extraction",
     )
+    parser.add_argument(
+        "--stop-point",
+        choices=list(PRESET_STARTING_POINTS.keys()),
+        help="Stopping point for extraction",
+    )
     parser.add_argument("--batch-size", type=int, help="Batch size for processing")
     parser.add_argument(
         "--buffer-size-slots",
@@ -273,19 +277,15 @@ if __name__ == "__main__":
     if args.command == "query":
         query_high_fee_transactions()
     else:
-        # Set up configuration based on arguments
-        if args.config == "performance":
-            config = get_performance_config()
-        elif args.config == "full-history":
-            from config import get_full_history_config
-
-            config = get_full_history_config()
-        else:
-            config = get_default_config()
-
+        config = ExtractionConfig(
+            start_point=PRESET_STARTING_POINTS["last_byron"],
+            stop_point=PRESET_STARTING_POINTS["last_shelley"],
+        )
         # Override config with command line arguments
         if args.start_point:
             config.start_point = PRESET_STARTING_POINTS[args.start_point]
+        if args.stop_point:
+            config.stop_point = PRESET_STARTING_POINTS[args.stop_point]
         if args.batch_size:
             config.batch_size = args.batch_size
         if args.buffer_size_slots:
