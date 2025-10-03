@@ -16,17 +16,19 @@ class ExtractionConfig:
     stop_point: Optional[ogmios.Point] = None
 
     # Batch processing settings
-    batch_size: int = 100
-    buffer_size_slots: int = 10000  # Save to parquet every N slots per slot group
+    batch_size: int = 200
+    buffer_size_slots: int = (
+        20000  # Save to parquet every N slots (flushes all buffers)
+    )
 
     # Slot grouping (slots per directory)
-    slot_group_size: int = 100000
+    slot_group_size: int = 200000
 
     # Output directory
     output_dir: str = "duckdb"
 
     # Progress reporting
-    progress_interval: int = 100  # Report progress every N blocks
+    progress_interval: int = 1000  # Report progress every N blocks
 
 
 # Predefined starting points - last block before each era

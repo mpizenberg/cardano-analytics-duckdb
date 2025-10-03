@@ -87,7 +87,19 @@ def main(config: ExtractionConfig):
 
     # Track transactions by slot group
     transactions_buffer = {}  # slot_group -> list of transactions
-    last_buffer_save_slot = {}  # slot_group -> last slot when buffer was saved
+    last_buffer_flush_slot = 0  # last slot when all buffers were flushed
+
+    def flush_all_buffers(current_slot):
+        """Flush all transaction buffers to parquet files."""
+        nonlocal last_buffer_flush_slot
+        flushed_count = 0
+        for slot_group_dir, txs in transactions_buffer.items():
+            if txs:
+                save_transactions_to_parquet(txs, slot_group_dir, config)
+                flushed_count += len(txs)
+                transactions_buffer[slot_group_dir] = []
+        last_buffer_flush_slot = current_slot
+        return flushed_count
 
     with ogmios.Client(host=config.ogmios_host, port=config.ogmios_port) as client:
         print("Connected to Ogmios client")
@@ -134,22 +146,16 @@ def main(config: ExtractionConfig):
                             # Add to buffer for this slot group
                             if slot_group_dir not in transactions_buffer:
                                 transactions_buffer[slot_group_dir] = []
-                                last_buffer_save_slot[slot_group_dir] = current_slot
 
                             transactions_buffer[slot_group_dir].append(tx_data)
 
-                            # Check if buffer should be saved based on slot difference
-                            slots_since_last_save = (
-                                current_slot - last_buffer_save_slot[slot_group_dir]
+                            # Check if we should flush all buffers based on slot difference
+                            slots_since_last_flush = (
+                                current_slot - last_buffer_flush_slot
                             )
-                            if slots_since_last_save >= config.buffer_size_slots:
-                                save_transactions_to_parquet(
-                                    transactions_buffer[slot_group_dir],
-                                    slot_group_dir,
-                                    config,
-                                )
-                                transactions_buffer[slot_group_dir] = []
-                                last_buffer_save_slot[slot_group_dir] = current_slot
+                            if slots_since_last_flush >= config.buffer_size_slots:
+                                flush_all_buffers(current_slot)
+                                transactions_buffer = {}
 
                     # Stop when we've reached the network tip
                     stop_point = (
@@ -163,11 +169,11 @@ def main(config: ExtractionConfig):
                         else:
                             print(f"Reached stop point at slot {stop_point}")
                         # Save any remaining transactions in buffers
-                        for slot_group_dir, txs in transactions_buffer.items():
-                            if txs:
-                                save_transactions_to_parquet(
-                                    txs, slot_group_dir, config
-                                )
+                        remaining_count = flush_all_buffers(current_slot)
+                        if remaining_count > 0:
+                            print(
+                                f"Flushed {remaining_count} remaining transactions at stop point"
+                            )
 
                         print(
                             f"Data extraction complete. Total transactions processed: {total_txs_processed}"
