@@ -16,7 +16,7 @@ class ExtractionConfig:
     stop_point: Optional[ogmios.Point] = None
 
     # Batch processing settings
-    batch_size: int = 200
+    batch_size: int = 100
     buffer_size_slots: int = (
         20000  # Save to parquet every N slots (flushes all buffers)
     )
