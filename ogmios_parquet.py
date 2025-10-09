@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Set
 from tqdm import tqdm
 from config import ExtractionConfig
+import uuid
+from collections import defaultdict
 
 
 def get_parquet_schema(data_type: str) -> pa.Schema:
@@ -80,12 +82,12 @@ def get_compression_config(data_type: str) -> dict:
     compression_configs = {
         "tx_raw": {
             "compression": "brotli",
-            "compression_level": 6,
+            "compression_level": 4,
             "use_dictionary": True,
         },
         "utxo": {
             "compression": "brotli",
-            "compression_level": 6,
+            "compression_level": 4,
             "use_dictionary": True,
         },
     }
@@ -196,8 +198,6 @@ def save_to_parquet_uncompressed(
     created_files: Set[Path],
 ):
     """Save data to a new, uncompressed parquet file for later merging."""
-    import uuid
-
     if not data:
         return 0
 
@@ -226,8 +226,6 @@ def save_to_parquet_uncompressed(
 
 def compress_final_files(created_files: Set[Path]):
     """Merge, compress, and save final parquet files."""
-    from collections import defaultdict
-
     tqdm.write(
         f"Starting final merge and compression of {len(created_files)} temporary files..."
     )
@@ -244,31 +242,27 @@ def compress_final_files(created_files: Set[Path]):
     for final_file_path, chunk_files in tqdm(
         files_to_merge.items(), desc="Merging and compressing files"
     ):
+        if not chunk_files:
+            continue
         try:
             # Determine data type from filename
             data_type = final_file_path.stem.replace("-", "_")
 
             # Read all chunk files into a list of DataFrames
             df_list = [pd.read_parquet(f) for f in chunk_files]
-            if not df_list:
-                continue
 
             # Concatenate into a single DataFrame
             combined_df = pd.concat(df_list, ignore_index=True)
 
-            # Get schema and compression config
+            # Write compressed with PyArrow schema
             schema = get_parquet_schema(data_type)
             compression_config = get_compression_config(data_type)
-
-            # Convert to PyArrow table with proper schema
             table = pa.Table.from_pandas(
                 combined_df, schema=schema, preserve_index=False
             )
-
-            # Write final compressed file
             pq.write_table(table, final_file_path, **compression_config)
             tqdm.write(
-                f"Created final file {final_file_path} with {len(combined_df)} records."
+                f"Created final file {final_file_path} with {len(chunk_files)} records."
             )
 
             # Clean up temporary chunk files
