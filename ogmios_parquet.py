@@ -26,11 +26,6 @@ def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
     """Extract relevant data for tx.parquet file."""
     # TODO: block height
     # TODO: ref inputs
-    # TODO: `has_mint`: BOOLEAN
-    # TODO: `has_withdrawal`: BOOLEAN
-    # TODO: `has_cert`: BOOLEAN
-    # TODO: `has_vote`: BOOLEAN
-    # TODO: `has_proposal`: BOOLEAN
     return {
         "slot": slot,
         "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
@@ -38,6 +33,11 @@ def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
         "input_count": len(tx.get("inputs", [])),
         "output_count": len(tx.get("outputs", [])),
         "redeemer_count": len(tx.get("redeemers", [])),
+        "has_mint": bool(tx.get("mint", [])),
+        "has_withdrawal": bool(tx.get("withdrawals", [])),
+        "has_cert": bool(tx.get("certificates", [])),
+        "has_vote": bool(tx.get("votes", [])),
+        "has_proposal": bool(tx.get("proposals", [])),
     }
 
 
