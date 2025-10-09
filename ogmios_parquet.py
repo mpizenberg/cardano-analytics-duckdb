@@ -1,9 +1,99 @@
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import ogmios
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from tqdm import tqdm
 from config import ExtractionConfig
+
+
+def get_parquet_schema(data_type: str) -> pa.Schema:
+    """Get PyArrow schema for each parquet file type."""
+    if data_type == "tx_raw":
+        return pa.schema(
+            [
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("slot", pa.uint64()),
+                pa.field("raw_cbor", pa.binary()),
+            ]
+        )
+
+    elif data_type == "tx":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("tx_fee", pa.uint64()),
+                pa.field("input_count", pa.uint16()),
+                pa.field("output_count", pa.uint16()),
+                pa.field("redeemer_count", pa.uint16()),
+                pa.field("has_mint", pa.bool_()),
+                pa.field("has_withdrawal", pa.bool_()),
+                pa.field("has_cert", pa.bool_()),
+                pa.field("has_vote", pa.bool_()),
+                pa.field("has_proposal", pa.bool_()),
+            ]
+        )
+
+    elif data_type == "utxo":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("output_index", pa.uint16()),
+                pa.field("address", pa.dictionary(pa.int32(), pa.string())),
+                pa.field("lovelace", pa.uint64()),
+                pa.field("has_token", pa.bool_()),
+                pa.field("has_datum", pa.bool_()),
+                pa.field("has_ref_script", pa.bool_()),
+            ]
+        )
+
+    elif data_type == "mint":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("policy_id", pa.binary(28)),
+                pa.field("asset_name", pa.binary()),
+                pa.field("quantity", pa.int64()),
+            ]
+        )
+
+    elif data_type == "cert":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("index", pa.uint16()),
+                pa.field("type", pa.dictionary(pa.int8(), pa.string())),
+            ]
+        )
+
+    else:
+        raise ValueError(f"Unknown data type: {data_type}")
+
+
+def get_compression_config(data_type: str) -> dict:
+    """Get optimal compression configuration for each file type."""
+    compression_configs = {
+        "tx_raw": {
+            "compression": "brotli",
+            "compression_level": 6,
+            "use_dictionary": True,
+        },
+        "utxo": {
+            "compression": "brotli",
+            "compression_level": 6,
+            "use_dictionary": True,
+        },
+    }
+
+    return compression_configs.get(
+        data_type,
+        {},
+    )
 
 
 def get_slot_group_directory(slot: int, group_size: int = 10000) -> str:
@@ -45,18 +135,19 @@ def extract_utxo_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
     """Extract UTxO data for utxo.parquet file."""
     utxos = []
     # TODO: `is_script_address`: BOOLEAN
-    # TODO: `has_datum`: BOOLEAN
-    # TODO: `has_ref_script`: BOOLEAN
     if tx.get("outputs"):
         for i, output in enumerate(tx["outputs"]):
             value = output.get("value", {})
+            address = output.get("address", "")
             utxo = {
                 "slot": slot,
                 "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
                 "output_index": i,
-                "address": output.get("address", ""),
+                "address": address,
                 "lovelace": value.get("ada", {}).get("lovelace", 0),
                 "has_token": len(value) > 1,
+                "has_datum": bool(output.get("datum")),
+                "has_ref_script": bool(output.get("script")),
             }
             utxos.append(utxo)
 
@@ -98,6 +189,22 @@ def extract_certificate_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, An
     return certificates
 
 
+def save_parquet_with_schema(df: pd.DataFrame, file_path: Path, data_type: str):
+    """Save DataFrame to parquet with proper schema and compression."""
+    if df.empty:
+        return
+
+    # Get schema and compression config for this data type
+    schema = get_parquet_schema(data_type)
+    compression_config = get_compression_config(data_type)
+
+    # Convert DataFrame to PyArrow table with proper schema
+    table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+
+    # Write parquet file with compression settings
+    pq.write_table(table, file_path, **compression_config)
+
+
 def save_to_parquet(
     data: List[Dict[str, Any]],
     file_name: str,
@@ -123,8 +230,11 @@ def save_to_parquet(
     group_dir = duckdb_dir / slot_group_dir
     group_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create DataFrame and save to parquet
+    # Create DataFrame
     df = pd.DataFrame(data)
+
+    # Determine data type from filename
+    data_type = file_name.split(".")[0].replace("-", "_")  # tx-raw.parquet -> tx_raw
     parquet_file = group_dir / file_name
 
     # If file exists, append to it, otherwise create new
@@ -146,7 +256,7 @@ def save_to_parquet(
             else:
                 dedup_msg = ""
 
-            combined_df.to_parquet(parquet_file, index=False)
+            save_parquet_with_schema(combined_df, parquet_file, data_type)
             tqdm.write(
                 f"Appended {len(df)} records to {parquet_file} (total: {len(combined_df)}{dedup_msg})"
             )
@@ -154,11 +264,11 @@ def save_to_parquet(
         except Exception as e:
             tqdm.write(f"Error appending to {parquet_file}: {e}")
             # If there's an error with the existing file, create a new one
-            df.to_parquet(parquet_file, index=False)
+            save_parquet_with_schema(df, parquet_file, data_type)
             tqdm.write(f"Created new {parquet_file} with {len(df)} records")
             return len(df)
     else:
-        df.to_parquet(parquet_file, index=False)
+        save_parquet_with_schema(df, parquet_file, data_type)
         tqdm.write(f"Created {parquet_file} with {len(df)} records")
         return len(df)
 

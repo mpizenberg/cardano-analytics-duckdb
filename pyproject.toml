@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "bech32>=1.2.0",
     "duckdb>=1.4.0",
     "networkx>=3.4.2",
     "ogmios>=1.4.2",
