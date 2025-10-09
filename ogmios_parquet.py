@@ -195,7 +195,9 @@ def save_to_parquet_uncompressed(
     config: ExtractionConfig,
     created_files: Set[Path],
 ):
-    """Save data to uncompressed parquet file (for speed during processing)."""
+    """Save data to a new, uncompressed parquet file for later merging."""
+    import uuid
+
     if not data:
         return 0
 
@@ -207,52 +209,76 @@ def save_to_parquet_uncompressed(
     # Create DataFrame
     df = pd.DataFrame(data)
 
-    # Track this file for compression later
-    parquet_file = group_dir / file_name
-    created_files.add(parquet_file)
+    # Create a unique filename for this chunk
+    chunk_id = uuid.uuid4().hex
+    base_name = Path(file_name).stem  # e.g. tx-raw
+    temp_file_name = f"{base_name}_{chunk_id}.parquet"
+    temp_parquet_file = group_dir / temp_file_name
 
-    if parquet_file.exists():
-        existing_df = pd.read_parquet(parquet_file)
-        combined_df = pd.concat([existing_df, df], ignore_index=True)
-        # Write uncompressed for speed
-        combined_df.to_parquet(parquet_file, compression=None)
-        tqdm.write(
-            f"Appended {len(df)} records to {parquet_file} (total: {len(combined_df)})"
-        )
-        return len(df)
-    else:
-        # Write uncompressed for speed
-        df.to_parquet(parquet_file, compression=None)
-        tqdm.write(f"Created {parquet_file} with {len(df)} records")
-        return len(df)
+    # Track this new file for merging and compression later
+    created_files.add(temp_parquet_file)
+
+    # Write uncompressed for speed
+    df.to_parquet(temp_parquet_file, compression=None)
+    tqdm.write(f"Wrote {len(df)} records to temporary file {temp_parquet_file}")
+    return len(df)
 
 
 def compress_final_files(created_files: Set[Path]):
-    """Compress all created files with optimal settings at the end."""
-    tqdm.write(f"Starting final compression of {len(created_files)} files...")
+    """Merge, compress, and save final parquet files."""
+    from collections import defaultdict
 
-    for file_path in tqdm(created_files, desc="Compressing files"):
+    tqdm.write(
+        f"Starting final merge and compression of {len(created_files)} temporary files..."
+    )
+
+    # Group files by final destination file
+    files_to_merge = defaultdict(list)
+    for temp_file_path in created_files:
+        base_name = temp_file_path.stem.rsplit("_", 1)[0]
+        final_file_name = f"{base_name}.parquet"
+        final_file_path = temp_file_path.parent / final_file_name
+        files_to_merge[final_file_path].append(temp_file_path)
+
+    # Process each group
+    for final_file_path, chunk_files in tqdm(
+        files_to_merge.items(), desc="Merging and compressing files"
+    ):
         try:
             # Determine data type from filename
-            data_type = file_path.stem.replace("-", "_")  # tx-raw -> tx_raw
+            data_type = final_file_path.stem.replace("-", "_")
 
-            # Read uncompressed data
-            df = pd.read_parquet(file_path)
+            # Read all chunk files into a list of DataFrames
+            df_list = [pd.read_parquet(f) for f in chunk_files]
+            if not df_list:
+                continue
+
+            # Concatenate into a single DataFrame
+            combined_df = pd.concat(df_list, ignore_index=True)
 
             # Get schema and compression config
             schema = get_parquet_schema(data_type)
             compression_config = get_compression_config(data_type)
 
             # Convert to PyArrow table with proper schema
-            table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+            table = pa.Table.from_pandas(
+                combined_df, schema=schema, preserve_index=False
+            )
 
-            # Write with compression
-            pq.write_table(table, file_path, **compression_config)
+            # Write final compressed file
+            pq.write_table(table, final_file_path, **compression_config)
+            tqdm.write(
+                f"Created final file {final_file_path} with {len(combined_df)} records."
+            )
+
+            # Clean up temporary chunk files
+            for f in chunk_files:
+                f.unlink()
 
         except Exception as e:
-            tqdm.write(f"Error compressing {file_path}: {e}")
+            tqdm.write(f"Error processing {final_file_path}: {e}")
 
-    tqdm.write("Final compression complete!")
+    tqdm.write("Final merge and compression complete!")
 
 
 def extract_transactions(config: ExtractionConfig):
