@@ -3,7 +3,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import ogmios
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Set
 from tqdm import tqdm
 from config import ExtractionConfig
 
@@ -104,7 +104,6 @@ def get_slot_group_directory(slot: int, group_size: int = 10000) -> str:
 
 def extract_transaction_raw_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
     """Extract raw transaction data for tx-raw.parquet file."""
-    # Store the full transaction data with minimal processing
     return {
         "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
         "slot": slot,
@@ -182,46 +181,21 @@ def extract_certificate_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, An
                 "slot": slot,
                 "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
                 "index": i,
-                "type": cert_type,  # TODO: convert to int
+                "type": cert_type,
             }
             certificates.append(cert_data)
 
     return certificates
 
 
-def save_parquet_with_schema(df: pd.DataFrame, file_path: Path, data_type: str):
-    """Save DataFrame to parquet with proper schema and compression."""
-    if df.empty:
-        return
-
-    # Get schema and compression config for this data type
-    schema = get_parquet_schema(data_type)
-    compression_config = get_compression_config(data_type)
-
-    # Convert DataFrame to PyArrow table with proper schema
-    table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
-
-    # Write parquet file with compression settings
-    pq.write_table(table, file_path, **compression_config)
-
-
-def save_to_parquet(
+def save_to_parquet_uncompressed(
     data: List[Dict[str, Any]],
     file_name: str,
     slot_group_dir: str,
     config: ExtractionConfig,
-    dedup_cols: Optional[List[str]] = None,
+    created_files: Set[Path],
 ):
-    """
-    Save data to a parquet file in the appropriate slot group directory.
-
-    Args:
-        data: List of dictionaries containing data to save
-        file_name: Name of the parquet file (e.g., "tx.parquet", "utxo.parquet")
-        slot_group_dir: Directory name for the slot group
-        config: Extraction configuration
-        dedup_cols: Column(s) to use for deduplication (None = no deduplication)
-    """
+    """Save data to uncompressed parquet file (for speed during processing)."""
     if not data:
         return 0
 
@@ -233,44 +207,52 @@ def save_to_parquet(
     # Create DataFrame
     df = pd.DataFrame(data)
 
-    # Determine data type from filename
-    data_type = file_name.split(".")[0].replace("-", "_")  # tx-raw.parquet -> tx_raw
+    # Track this file for compression later
     parquet_file = group_dir / file_name
+    created_files.add(parquet_file)
 
-    # If file exists, append to it, otherwise create new
     if parquet_file.exists():
-        try:
-            existing_df = pd.read_parquet(parquet_file)
-            combined_df = pd.concat([existing_df, df], ignore_index=True)
-
-            # Remove duplicates if dedup columns are specified
-            if dedup_cols:
-                pre_dedup_count = len(combined_df)
-                combined_df = combined_df.drop_duplicates(
-                    subset=dedup_cols, keep="last"
-                )
-                dedup_count = pre_dedup_count - len(combined_df)
-                dedup_msg = (
-                    f", removed {dedup_count} duplicates" if dedup_count > 0 else ""
-                )
-            else:
-                dedup_msg = ""
-
-            save_parquet_with_schema(combined_df, parquet_file, data_type)
-            tqdm.write(
-                f"Appended {len(df)} records to {parquet_file} (total: {len(combined_df)}{dedup_msg})"
-            )
-            return len(df)
-        except Exception as e:
-            tqdm.write(f"Error appending to {parquet_file}: {e}")
-            # If there's an error with the existing file, create a new one
-            save_parquet_with_schema(df, parquet_file, data_type)
-            tqdm.write(f"Created new {parquet_file} with {len(df)} records")
-            return len(df)
+        existing_df = pd.read_parquet(parquet_file)
+        combined_df = pd.concat([existing_df, df], ignore_index=True)
+        # Write uncompressed for speed
+        combined_df.to_parquet(parquet_file, compression=None)
+        tqdm.write(
+            f"Appended {len(df)} records to {parquet_file} (total: {len(combined_df)})"
+        )
+        return len(df)
     else:
-        save_parquet_with_schema(df, parquet_file, data_type)
+        # Write uncompressed for speed
+        df.to_parquet(parquet_file, compression=None)
         tqdm.write(f"Created {parquet_file} with {len(df)} records")
         return len(df)
+
+
+def compress_final_files(created_files: Set[Path]):
+    """Compress all created files with optimal settings at the end."""
+    tqdm.write(f"Starting final compression of {len(created_files)} files...")
+
+    for file_path in tqdm(created_files, desc="Compressing files"):
+        try:
+            # Determine data type from filename
+            data_type = file_path.stem.replace("-", "_")  # tx-raw -> tx_raw
+
+            # Read uncompressed data
+            df = pd.read_parquet(file_path)
+
+            # Get schema and compression config
+            schema = get_parquet_schema(data_type)
+            compression_config = get_compression_config(data_type)
+
+            # Convert to PyArrow table with proper schema
+            table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+
+            # Write with compression
+            pq.write_table(table, file_path, **compression_config)
+
+        except Exception as e:
+            tqdm.write(f"Error compressing {file_path}: {e}")
+
+    tqdm.write("Final compression complete!")
 
 
 def extract_transactions(config: ExtractionConfig):
@@ -290,29 +272,23 @@ def extract_transactions(config: ExtractionConfig):
     tqdm.write(f"Output directory: {config.output_dir}")
     tqdm.write(f"Slot group size: {config.slot_group_size}")
 
-    # Track data by slot group, with each group containing different data types
+    # Track data by slot group
     data_buffers = {}  # slot_group -> {"tx": [], "tx_raw": [], ...}
-
-    last_buffer_flush_slot = 0  # last slot when all buffers were flushed
+    created_files: Set[Path] = set()  # Track files for final compression
+    last_buffer_flush_slot = 0
 
     def flush_all_buffers(current_slot):
-        """Flush all data buffers to parquet files."""
+        """Flush all data buffers to uncompressed parquet files."""
         nonlocal last_buffer_flush_slot
         flushed_count = 0
 
-        # Define file configurations: file name and deduplication columns
+        # Define file configurations (no dedup since no duplicates exist)
         file_configs = {
-            "tx_raw": {"file": "tx-raw.parquet", "dedup": ["tx_id"]},
-            "tx": {"file": "tx.parquet", "dedup": ["tx_id"]},
-            "utxo": {"file": "utxo.parquet", "dedup": ["tx_id", "output_index"]},
-            "mint": {
-                "file": "mint.parquet",
-                "dedup": ["tx_id", "policy_id", "asset_name"],
-            },
-            "cert": {"file": "cert.parquet", "dedup": ["tx_id", "index"]},
-            # "vote": {"file": "vote.parquet", "dedup": ["tx_id", "index"]},
-            # "redeemer": {"file": "redeemer.parquet", "dedup": ["tx_id", "index"]},
-            # "proposal": {"file": "proposal.parquet", "dedup": ["tx_id", "index"]},
+            "tx_raw": {"file": "tx-raw.parquet"},
+            "tx": {"file": "tx.parquet"},
+            "utxo": {"file": "utxo.parquet"},
+            "mint": {"file": "mint.parquet"},
+            "cert": {"file": "cert.parquet"},
         }
 
         # Process each slot group
@@ -321,12 +297,12 @@ def extract_transactions(config: ExtractionConfig):
             for data_type, buffer in data_types.items():
                 if buffer and data_type in file_configs:
                     config_data = file_configs[data_type]
-                    flushed_count += save_to_parquet(
+                    flushed_count += save_to_parquet_uncompressed(
                         data=buffer,
                         file_name=config_data["file"],
                         slot_group_dir=slot_group_dir,
                         config=config,
-                        dedup_cols=config_data["dedup"],
+                        created_files=created_files,
                     )
                     # Clear the buffer
                     data_buffers[slot_group_dir][data_type] = []
@@ -388,22 +364,15 @@ def extract_transactions(config: ExtractionConfig):
                             )
 
                             for tx in block.transactions:
-                                # Process basic transaction data (tx.parquet)
+                                # Process all data types
                                 tx_data = extract_transaction_data(tx, current_slot)
                                 total_txs_processed += 1
 
-                                # Process raw transaction data (tx-raw.parquet)
                                 tx_raw_data = extract_transaction_raw_data(
                                     tx, current_slot
                                 )
-
-                                # Process UTxO data (utxo.parquet)
                                 utxo_data = extract_utxo_data(tx, current_slot)
-
-                                # Process mint data (mint.parquet)
                                 mint_data = extract_mint_data(tx, current_slot)
-
-                                # Process certificate data (cert.parquet)
                                 cert_data = extract_certificate_data(tx, current_slot)
 
                                 # Initialize slot group buffer if it doesn't exist
@@ -414,18 +383,14 @@ def extract_transactions(config: ExtractionConfig):
                                         "utxo": [],
                                         "mint": [],
                                         "cert": [],
-                                        # "vote": [],
-                                        # "redeemer": [],
-                                        # "proposal": [],
                                     }
 
-                                # Add to respective buffers for this slot group
+                                # Add to respective buffers
                                 data_buffers[slot_group_dir]["tx"].append(tx_data)
                                 data_buffers[slot_group_dir]["tx_raw"].append(
                                     tx_raw_data
                                 )
 
-                                # Add data that might be empty
                                 if utxo_data:
                                     data_buffers[slot_group_dir]["utxo"].extend(
                                         utxo_data
@@ -439,7 +404,7 @@ def extract_transactions(config: ExtractionConfig):
                                         cert_data
                                     )
 
-                                # Check if we should flush all buffers based on slot difference
+                                # Flush buffers when needed
                                 slots_since_last_flush = (
                                     current_slot - last_buffer_flush_slot
                                 )
@@ -447,7 +412,7 @@ def extract_transactions(config: ExtractionConfig):
                                     flushed_count = flush_all_buffers(current_slot)
                                     # Reset all data buffers
                                     data_buffers = {}
-                                    # Update progress bar only when flushing buffers
+                                    # Update progress bar
                                     slots_progress = current_slot - start_slot
                                     pbar.n = min(slots_progress, total_slots)
                                     pbar.set_postfix(
@@ -460,7 +425,7 @@ def extract_transactions(config: ExtractionConfig):
                                     )
                                     pbar.refresh()
 
-                        # Stop when we've reached the network tip
+                        # Check stop condition
                         stop_point = (
                             min(config.stop_point.slot, tip.slot)
                             if config.stop_point
@@ -479,27 +444,34 @@ def extract_transactions(config: ExtractionConfig):
                             )
                             pbar.refresh()
                             pbar.close()
+
                             if tip.height == block.height:
                                 tqdm.write(f"Reached chain tip at slot {tip.slot}")
                             else:
                                 tqdm.write(f"Reached stop point at slot {stop_point}")
+
                             # Save any remaining transactions in buffers
                             remaining_count = flush_all_buffers(current_slot)
                             if remaining_count > 0:
                                 tqdm.write(
-                                    f"Flushed {remaining_count} remaining transactions at stop point"
+                                    f"Flushed {remaining_count} remaining transactions"
                                 )
 
+                            # Final compression phase
                             tqdm.write(
-                                f"Data extraction complete. Total transactions processed: {total_txs_processed:,}"
+                                "Data extraction complete. Starting final compression..."
                             )
+                            compress_final_files(created_files)
+
                             tqdm.write(
-                                f"Data saved in {config.output_dir}/ directory organized by slot groups"
+                                f"Simple optimized extraction complete. Total transactions: {total_txs_processed:,}"
                             )
+                            tqdm.write(f"Data saved in {config.output_dir}/ directory")
                             return
 
                     elif direction.value == "backward":
                         tqdm.write("Encountered rollback, continuing...")
+
         finally:
             # Ensure progress bar is closed even if an exception occurs
             pbar.close()
