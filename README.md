@@ -17,9 +17,11 @@ Inside each folder, we will have the following files:
 ## Parquet Schemas
 
 Here are the detailed types needed for each of the aforementioned parquet files.
+TODO: add tx_id to tx-raw.parquet?
+TODO: add slot to all parquet files?
 
 - `tx-raw.parquet`:
-  - `raw_bytes`: BYTE_ARRAY
+  - `raw_cbor`: BYTE_ARRAY
 
 - `tx.parquet`:
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
@@ -50,19 +52,19 @@ Here are the detailed types needed for each of the aforementioned parquet files.
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
   - `output_index`: INT32
   - `policy_id`: FIXED_LEN_BYTE_ARRAY(28)
-  - `asset_name`: ASCII STRING
+  - `asset_name`: BYTE_ARRAY
   - `quantity`: INT64
 
 - `mint.parquet`:
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
   - `policy_id`: FIXED_LEN_BYTE_ARRAY(28)
-  - `asset_name`: ASCII STRING
+  - `asset_name`: BYTE_ARRAY
   - `quantity`: INT64
 
 - `cert.parquet`:
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
-  - `cert_index`: INT32
-  - `type`: ASCII STRING
+  - `index`: INT32
+  - `type`: ASCII STRING  TODO: change to INT32
 
 - `vote.parquet`:
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)

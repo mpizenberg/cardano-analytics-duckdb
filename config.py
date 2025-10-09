@@ -58,6 +58,10 @@ PRESET_STARTING_POINTS = {
         slot=90914081,
         id="2f7784ab8eee0e3d81223b9bd482195617cbee662ed6c412b123568251aac67a",
     ),
+    "snek_mint_plus_100K_blocks": ogmios.Point(
+        slot=92961183,
+        id="055d7e5660fcfb8bede7eee40d55456030ba51a41d57d85fcea9a820644991b2",
+    ),
 }
 
 

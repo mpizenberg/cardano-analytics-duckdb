@@ -1,7 +1,7 @@
 import pandas as pd
 import ogmios
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from tqdm import tqdm
 from config import ExtractionConfig
 
@@ -12,44 +12,111 @@ def get_slot_group_directory(slot: int, group_size: int = 10000) -> str:
     return f"slot_{group * group_size}_{(group + 1) * group_size - 1}"
 
 
-def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
-    """Extract relevant data from a transaction."""
-    tx_id = tx.get("id", "")
-    tx_fee = tx.get("fee", {}).get("ada", {}).get("lovelace", 0)
-
-    # Extract inputs (tx_id + output_index)
-    inputs = []
-    if tx.get("inputs"):
-        for input_utxo in tx["inputs"]:
-            input_tx_id = input_utxo.get("transaction", {}).get("id", "")
-            output_index = input_utxo.get("index", 0)
-            inputs.append(f"{input_tx_id}#{output_index}")
-
-    # Extract output addresses
-    output_addresses = []
-    if tx.get("outputs"):
-        for output in tx["outputs"]:
-            address = output.get("address", "")
-            if address:
-                output_addresses.append(address)
-
+def extract_transaction_raw_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
+    """Extract raw transaction data for tx-raw.parquet file."""
+    # Store the full transaction data with minimal processing
     return {
+        "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
         "slot": slot,
-        "tx_id": tx_id,
-        "tx_fee": tx_fee,
-        "inputs": "|".join(inputs),  # Join with pipe separator for easy parsing
-        "output_addresses": "|".join(output_addresses),  # Join with pipe separator
-        "num_inputs": len(inputs),
-        "num_outputs": len(output_addresses),
+        "raw_cbor": bytes.fromhex(tx.get("cbor", "")),
     }
 
 
-def save_transactions_to_parquet(
-    transactions: List[Dict[str, Any]], slot_group_dir: str, config: ExtractionConfig
+def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
+    """Extract relevant data for tx.parquet file."""
+    # TODO: block height
+    # TODO: ref inputs
+    # TODO: `has_mint`: BOOLEAN
+    # TODO: `has_withdrawal`: BOOLEAN
+    # TODO: `has_cert`: BOOLEAN
+    # TODO: `has_vote`: BOOLEAN
+    # TODO: `has_proposal`: BOOLEAN
+    return {
+        "slot": slot,
+        "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
+        "tx_fee": tx.get("fee", {}).get("ada", {}).get("lovelace", 0),
+        "input_count": len(tx.get("inputs", [])),
+        "output_count": len(tx.get("outputs", [])),
+        "redeemer_count": len(tx.get("redeemers", [])),
+    }
+
+
+def extract_utxo_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
+    """Extract UTxO data for utxo.parquet file."""
+    utxos = []
+    # TODO: `is_script_address`: BOOLEAN
+    # TODO: `has_datum`: BOOLEAN
+    # TODO: `has_ref_script`: BOOLEAN
+    if tx.get("outputs"):
+        for i, output in enumerate(tx["outputs"]):
+            value = output.get("value", {})
+            utxo = {
+                "slot": slot,
+                "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
+                "output_index": i,
+                "address": output.get("address", ""),
+                "lovelace": value.get("ada", {}).get("lovelace", 0),
+                "has_token": len(value) > 1,
+            }
+            utxos.append(utxo)
+
+    return utxos
+
+
+def extract_mint_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
+    """Extract minting data for mint.parquet file."""
+    mint_records = []
+    if tx.get("mint"):
+        for policy_id, assets in tx["mint"].items():
+            for asset_name, quantity in assets.items():
+                mint_record = {
+                    "slot": slot,
+                    "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
+                    "policy_id": bytes.fromhex(policy_id),
+                    "asset_name": bytes.fromhex(asset_name),
+                    "quantity": quantity,
+                }
+                mint_records.append(mint_record)
+
+    return mint_records
+
+
+def extract_certificate_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
+    """Extract certificate data for cert.parquet file."""
+    certificates = []
+    if tx.get("certificates"):
+        for i, cert in enumerate(tx["certificates"]):
+            cert_type = cert.get("type", "unknown")
+            cert_data = {
+                "slot": slot,
+                "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
+                "index": i,
+                "type": cert_type,  # TODO: convert to int
+            }
+            certificates.append(cert_data)
+
+    return certificates
+
+
+def save_to_parquet(
+    data: List[Dict[str, Any]],
+    file_name: str,
+    slot_group_dir: str,
+    config: ExtractionConfig,
+    dedup_cols: Optional[List[str]] = None,
 ):
-    """Save transaction data to parquet file in the appropriate slot group directory."""
-    if not transactions:
-        return
+    """
+    Save data to a parquet file in the appropriate slot group directory.
+
+    Args:
+        data: List of dictionaries containing data to save
+        file_name: Name of the parquet file (e.g., "tx.parquet", "utxo.parquet")
+        slot_group_dir: Directory name for the slot group
+        config: Extraction configuration
+        dedup_cols: Column(s) to use for deduplication (None = no deduplication)
+    """
+    if not data:
+        return 0
 
     # Create the full directory path
     duckdb_dir = Path(config.output_dir)
@@ -57,22 +124,43 @@ def save_transactions_to_parquet(
     group_dir.mkdir(parents=True, exist_ok=True)
 
     # Create DataFrame and save to parquet
-    df = pd.DataFrame(transactions)
-    parquet_file = group_dir / "tx.parquet"
+    df = pd.DataFrame(data)
+    parquet_file = group_dir / file_name
 
     # If file exists, append to it, otherwise create new
     if parquet_file.exists():
-        existing_df = pd.read_parquet(parquet_file)
-        combined_df = pd.concat([existing_df, df], ignore_index=True)
-        # Remove duplicates based on tx_id
-        combined_df = combined_df.drop_duplicates(subset=["tx_id"], keep="last")
-        combined_df.to_parquet(parquet_file, index=False)
-        tqdm.write(
-            f"Appended {len(df)} transactions to {parquet_file} (total: {len(combined_df)})"
-        )
+        try:
+            existing_df = pd.read_parquet(parquet_file)
+            combined_df = pd.concat([existing_df, df], ignore_index=True)
+
+            # Remove duplicates if dedup columns are specified
+            if dedup_cols:
+                pre_dedup_count = len(combined_df)
+                combined_df = combined_df.drop_duplicates(
+                    subset=dedup_cols, keep="last"
+                )
+                dedup_count = pre_dedup_count - len(combined_df)
+                dedup_msg = (
+                    f", removed {dedup_count} duplicates" if dedup_count > 0 else ""
+                )
+            else:
+                dedup_msg = ""
+
+            combined_df.to_parquet(parquet_file, index=False)
+            tqdm.write(
+                f"Appended {len(df)} records to {parquet_file} (total: {len(combined_df)}{dedup_msg})"
+            )
+            return len(df)
+        except Exception as e:
+            tqdm.write(f"Error appending to {parquet_file}: {e}")
+            # If there's an error with the existing file, create a new one
+            df.to_parquet(parquet_file, index=False)
+            tqdm.write(f"Created new {parquet_file} with {len(df)} records")
+            return len(df)
     else:
         df.to_parquet(parquet_file, index=False)
-        tqdm.write(f"Created {parquet_file} with {len(df)} transactions")
+        tqdm.write(f"Created {parquet_file} with {len(df)} records")
+        return len(df)
 
 
 def extract_transactions(config: ExtractionConfig):
@@ -92,19 +180,47 @@ def extract_transactions(config: ExtractionConfig):
     tqdm.write(f"Output directory: {config.output_dir}")
     tqdm.write(f"Slot group size: {config.slot_group_size}")
 
-    # Track transactions by slot group
-    transactions_buffer = {}  # slot_group -> list of transactions
+    # Track data by slot group, with each group containing different data types
+    data_buffers = {}  # slot_group -> {"tx": [], "tx_raw": [], ...}
+
     last_buffer_flush_slot = 0  # last slot when all buffers were flushed
 
     def flush_all_buffers(current_slot):
-        """Flush all transaction buffers to parquet files."""
+        """Flush all data buffers to parquet files."""
         nonlocal last_buffer_flush_slot
         flushed_count = 0
-        for slot_group_dir, txs in transactions_buffer.items():
-            if txs:
-                save_transactions_to_parquet(txs, slot_group_dir, config)
-                flushed_count += len(txs)
-                transactions_buffer[slot_group_dir] = []
+
+        # Define file configurations: file name and deduplication columns
+        file_configs = {
+            "tx_raw": {"file": "tx-raw.parquet", "dedup": ["tx_id"]},
+            "tx": {"file": "tx.parquet", "dedup": ["tx_id"]},
+            "utxo": {"file": "utxo.parquet", "dedup": ["tx_id", "output_index"]},
+            "mint": {
+                "file": "mint.parquet",
+                "dedup": ["tx_id", "policy_id", "asset_name"],
+            },
+            "cert": {"file": "cert.parquet", "dedup": ["tx_id", "index"]},
+            # "vote": {"file": "vote.parquet", "dedup": ["tx_id", "index"]},
+            # "redeemer": {"file": "redeemer.parquet", "dedup": ["tx_id", "index"]},
+            # "proposal": {"file": "proposal.parquet", "dedup": ["tx_id", "index"]},
+        }
+
+        # Process each slot group
+        for slot_group_dir, data_types in data_buffers.items():
+            # Process each data type in this slot group
+            for data_type, buffer in data_types.items():
+                if buffer and data_type in file_configs:
+                    config_data = file_configs[data_type]
+                    flushed_count += save_to_parquet(
+                        data=buffer,
+                        file_name=config_data["file"],
+                        slot_group_dir=slot_group_dir,
+                        config=config,
+                        dedup_cols=config_data["dedup"],
+                    )
+                    # Clear the buffer
+                    data_buffers[slot_group_dir][data_type] = []
+
         last_buffer_flush_slot = current_slot
         return flushed_count
 
@@ -162,14 +278,56 @@ def extract_transactions(config: ExtractionConfig):
                             )
 
                             for tx in block.transactions:
+                                # Process basic transaction data (tx.parquet)
                                 tx_data = extract_transaction_data(tx, current_slot)
                                 total_txs_processed += 1
 
-                                # Add to buffer for this slot group
-                                if slot_group_dir not in transactions_buffer:
-                                    transactions_buffer[slot_group_dir] = []
+                                # Process raw transaction data (tx-raw.parquet)
+                                tx_raw_data = extract_transaction_raw_data(
+                                    tx, current_slot
+                                )
 
-                                transactions_buffer[slot_group_dir].append(tx_data)
+                                # Process UTxO data (utxo.parquet)
+                                utxo_data = extract_utxo_data(tx, current_slot)
+
+                                # Process mint data (mint.parquet)
+                                mint_data = extract_mint_data(tx, current_slot)
+
+                                # Process certificate data (cert.parquet)
+                                cert_data = extract_certificate_data(tx, current_slot)
+
+                                # Initialize slot group buffer if it doesn't exist
+                                if slot_group_dir not in data_buffers:
+                                    data_buffers[slot_group_dir] = {
+                                        "tx": [],
+                                        "tx_raw": [],
+                                        "utxo": [],
+                                        "mint": [],
+                                        "cert": [],
+                                        # "vote": [],
+                                        # "redeemer": [],
+                                        # "proposal": [],
+                                    }
+
+                                # Add to respective buffers for this slot group
+                                data_buffers[slot_group_dir]["tx"].append(tx_data)
+                                data_buffers[slot_group_dir]["tx_raw"].append(
+                                    tx_raw_data
+                                )
+
+                                # Add data that might be empty
+                                if utxo_data:
+                                    data_buffers[slot_group_dir]["utxo"].extend(
+                                        utxo_data
+                                    )
+                                if mint_data:
+                                    data_buffers[slot_group_dir]["mint"].extend(
+                                        mint_data
+                                    )
+                                if cert_data:
+                                    data_buffers[slot_group_dir]["cert"].extend(
+                                        cert_data
+                                    )
 
                                 # Check if we should flush all buffers based on slot difference
                                 slots_since_last_flush = (
@@ -177,7 +335,8 @@ def extract_transactions(config: ExtractionConfig):
                                 )
                                 if slots_since_last_flush >= config.buffer_size_slots:
                                     flushed_count = flush_all_buffers(current_slot)
-                                    transactions_buffer = {}
+                                    # Reset all data buffers
+                                    data_buffers = {}
                                     # Update progress bar only when flushing buffers
                                     slots_progress = current_slot - start_slot
                                     pbar.n = min(slots_progress, total_slots)
