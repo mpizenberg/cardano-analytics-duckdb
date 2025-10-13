@@ -63,6 +63,18 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
             ]
         )
 
+    elif data_type == "asset":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("output_index", pa.uint16()),
+                pa.field("policy_id", pa.binary(28)),
+                pa.field("asset_name", pa.binary()),
+                pa.field("amount", pa.uint64()),
+            ]
+        )
+
     elif data_type == "cert":
         return pa.schema(
             [
@@ -86,6 +98,11 @@ def get_compression_config(data_type: str) -> dict:
             "use_dictionary": True,
         },
         "utxo": {
+            "compression": "brotli",
+            "compression_level": 4,
+            "use_dictionary": True,
+        },
+        "asset": {
             "compression": "brotli",
             "compression_level": 4,
             "use_dictionary": True,
@@ -171,6 +188,34 @@ def extract_mint_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
                 mint_records.append(mint_record)
 
     return mint_records
+
+
+def extract_asset_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
+    """Extract asset data for asset.parquet file."""
+    asset_records = []
+    if tx.get("outputs"):
+        for output_index, output in enumerate(tx["outputs"]):
+            value = output.get("value", {})
+            # Skip if no assets (only ADA)
+            if len(value) <= 1:
+                continue
+
+            # Process each asset in the output
+            for policy_id, assets in value.items():
+                if policy_id == "ada":  # Skip ADA
+                    continue
+                for asset_name, amount in assets.items():
+                    asset_record = {
+                        "slot": slot,
+                        "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
+                        "output_index": output_index,
+                        "policy_id": bytes.fromhex(policy_id),
+                        "asset_name": bytes.fromhex(asset_name),
+                        "amount": amount,
+                    }
+                    asset_records.append(asset_record)
+
+    return asset_records
 
 
 def extract_certificate_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
@@ -308,6 +353,7 @@ def extract_transactions(config: ExtractionConfig):
             "tx": {"file": "tx.parquet"},
             "utxo": {"file": "utxo.parquet"},
             "mint": {"file": "mint.parquet"},
+            "asset": {"file": "asset.parquet"},
             "cert": {"file": "cert.parquet"},
         }
 
@@ -388,11 +434,12 @@ def extract_transactions(config: ExtractionConfig):
                                 tx_data = extract_transaction_data(tx, current_slot)
                                 total_txs_processed += 1
 
-                                tx_raw_data = extract_transaction_raw_data(
-                                    tx, current_slot
-                                )
+                                # tx_raw_data = extract_transaction_raw_data(
+                                #     tx, current_slot
+                                # )
                                 utxo_data = extract_utxo_data(tx, current_slot)
                                 mint_data = extract_mint_data(tx, current_slot)
+                                asset_data = extract_asset_data(tx, current_slot)
                                 cert_data = extract_certificate_data(tx, current_slot)
 
                                 # Initialize slot group buffer if it doesn't exist
@@ -402,14 +449,15 @@ def extract_transactions(config: ExtractionConfig):
                                         "tx_raw": [],
                                         "utxo": [],
                                         "mint": [],
+                                        "asset": [],
                                         "cert": [],
                                     }
 
                                 # Add to respective buffers
                                 data_buffers[slot_group_dir]["tx"].append(tx_data)
-                                data_buffers[slot_group_dir]["tx_raw"].append(
-                                    tx_raw_data
-                                )
+                                # data_buffers[slot_group_dir]["tx_raw"].append(
+                                #     tx_raw_data
+                                # )
 
                                 if utxo_data:
                                     data_buffers[slot_group_dir]["utxo"].extend(
@@ -418,6 +466,10 @@ def extract_transactions(config: ExtractionConfig):
                                 if mint_data:
                                     data_buffers[slot_group_dir]["mint"].extend(
                                         mint_data
+                                    )
+                                if asset_data:
+                                    data_buffers[slot_group_dir]["asset"].extend(
+                                        asset_data
                                     )
                                 if cert_data:
                                     data_buffers[slot_group_dir]["cert"].extend(
