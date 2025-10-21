@@ -107,3 +107,28 @@ This implies finding fees where the SNEK token is involved, as well as the other
 
 I’d be curious to know if there is a more reliable way to identify snek fun transactions.
 Because manually adding pools, and filtering orders based on the datum or assets will not be scalable.
+
+## Community Interest
+
+Trying to gather some ideas/whishes:
+
+- `@KylixAfonso`: retrieving history of a state-thread token (sst) utxo and its datum
+- `@SteelSwap`: portfolio can get tricky if you want to track it historically
+- `@alxaex`: daily progression of the utxo set. Also of network fees as a proxy to network activity.
+- `@adatainment`:
+  - proposed and enacted parameter updates
+  - rewards history per epoch
+  - redelegation per epoch
+  - any pool parameter updates
+- `@NicolasC3rny`: governance KPIs https://docs.google.com/document/d/1NQWMkOPWOgLoBr8FY3OLFEjuupyt-9h-xvWcA6xaP7E/edit?tab=t.0
+- `@_KtorZ_`:
+  - smart contract usage (per language, per script, ...)
+  - plutus builtin usage
+- `@jonahkoch`: tracking of defi kernel beacon tokens
+- `@SmaugPool`:
+  - pool stake at a specific slot
+  - DRep stake at a specific slot
+  - votes yes/no/abstain stake at a specific slot.
+  - stake address value at a specific slot (at least lovelaces with rewards; native assets could be useful too)
+- `@CardanoDiplomat`: address balance
+- `@solidsnakedev`: integrations with Firehose + Substreams (nowitness labs)
