@@ -27,7 +27,7 @@ TODO: add slot to all parquet files?
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
   - `block_height`: INT32
   - `slot`: INT64
-  - `fee`: INT64
+  - `tx_fee`: INT64
   - `ref_input_count`: INT32
   - `input_count`: INT32
   - `output_count`: INT32

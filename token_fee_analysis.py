@@ -213,65 +213,59 @@ class TokenFeeAnalyzer:
             slot_filter = f"AND {' AND '.join(conditions)}"
 
         query = f"""
-        WITH token_utxos_creating_tx AS (
-            -- Transactions that create UTXOs with the token (outputs)
-            SELECT DISTINCT
-                a.tx_id,
-                a.slot,
-                'output' as involvement_type
+        WITH relevant_txs AS (
+            -- All transactions with the token in outputs
+            SELECT DISTINCT a.tx_id, t.slot, t.tx_fee
             FROM asset_view a
+            JOIN tx_view t ON a.tx_id = t.tx_id
             WHERE a.policy_id = {policy_id_binary}
-                AND a.asset_name = {asset_name_binary}
-                {slot_filter.replace("t.slot", "a.slot") if slot_filter else ""}
+              AND a.asset_name = {asset_name_binary}
+              {slot_filter if slot_filter else ""}
         ),
-        token_utxos_consuming_tx AS (
-            -- Transactions that consume UTXOs with the token (inputs)
-            SELECT DISTINCT
+
+        input_addresses AS (
+            -- Addresses of input UTxOs holding that token
+            SELECT
                 tx.tx_id,
-                tx.slot,
-                'input' as involvement_type
+                ARRAY_SORT(ARRAY_AGG(DISTINCT u_in.address)) AS input_addr_set
             FROM tx_view tx,
                  UNNEST(tx.inputs) AS t(input_ref)
-            JOIN asset_view a_in ON (
-                a_in.tx_id = input_ref.tx_id
-                AND a_in.output_index = input_ref.output_index
-                AND a_in.policy_id = {policy_id_binary}
-                AND a_in.asset_name = {asset_name_binary}
-            )
-            WHERE 1=1 {slot_filter if slot_filter else ""}
+            JOIN asset_view a_in
+              ON a_in.tx_id = input_ref.tx_id
+             AND a_in.output_index = input_ref.output_index
+             AND a_in.policy_id = {policy_id_binary}
+             AND a_in.asset_name = {asset_name_binary}
+            JOIN utxo_view u_in
+              ON u_in.tx_id = a_in.tx_id
+             AND u_in.output_index = a_in.output_index
+            GROUP BY tx.tx_id
         ),
-        all_relevant_tx AS (
-            -- All transactions that either create or consume token UTXOs
-            SELECT tx_id, slot, involvement_type FROM token_utxos_creating_tx
-            UNION
-            SELECT tx_id, slot, involvement_type FROM token_utxos_consuming_tx
-        ),
-        tx_with_mint_check AS (
-            -- Check which transactions also mint the token
+
+        output_addresses AS (
+            -- Addresses of output UTxOs holding that token
             SELECT
-                art.tx_id,
-                art.slot,
-                CASE WHEN m.tx_id IS NOT NULL THEN true ELSE false END as has_mint
-            FROM all_relevant_tx art
-            LEFT JOIN mint_view m ON (
-                m.tx_id = art.tx_id
-                AND m.policy_id = {policy_id_binary}
-                AND m.asset_name = {asset_name_binary}
-                AND m.quantity > 0
-            )
-            GROUP BY art.tx_id, art.slot, m.tx_id
+                a_out.tx_id,
+                ARRAY_SORT(ARRAY_AGG(DISTINCT u_out.address)) AS output_addr_set
+            FROM asset_view a_out
+            JOIN utxo_view u_out
+              ON u_out.tx_id = a_out.tx_id
+             AND u_out.output_index = a_out.output_index
+            WHERE a_out.policy_id = {policy_id_binary}
+              AND a_out.asset_name = {asset_name_binary}
+            GROUP BY a_out.tx_id
         )
-        SELECT DISTINCT
-            tmc.slot,
-            tmc.tx_id,
+
+        SELECT
+            tx.slot,
+            tx.tx_id,
             tx.tx_fee,
-            tx.input_count,
-            tx.output_count,
-            tmc.has_mint,
-            'preliminary' as transfer_type
-        FROM tx_with_mint_check tmc
-        JOIN tx_view tx ON tmc.tx_id = tx.tx_id
-        ORDER BY tmc.slot ASC
+            input_addresses.input_addr_set,
+            output_addresses.output_addr_set
+        FROM relevant_txs tx
+        LEFT JOIN input_addresses USING (tx_id)
+        LEFT JOIN output_addresses USING (tx_id)
+        WHERE input_addresses.input_addr_set <> output_addresses.output_addr_set
+        ORDER BY tx.slot ASC;
         """
 
         print("Executing preliminary transaction query...")
@@ -281,11 +275,6 @@ class TokenFeeAnalyzer:
         if len(result) == 0:
             print("No transactions found that involve these UTXOs!")
             return pd.DataFrame()
-
-        # Show some basic stats
-        mint_count = result["has_mint"].sum()
-        print(f"  Transactions with minting: {mint_count}")
-        print(f"  Transactions without minting: {len(result) - mint_count}")
 
         return result
 
