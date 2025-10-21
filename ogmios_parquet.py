@@ -35,6 +35,17 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
                 pa.field("has_cert", pa.bool_()),
                 pa.field("has_vote", pa.bool_()),
                 pa.field("has_proposal", pa.bool_()),
+                pa.field(
+                    "inputs",
+                    pa.list_(
+                        pa.struct(
+                            [
+                                pa.field("tx_id", pa.binary(32)),
+                                pa.field("output_index", pa.uint16()),
+                            ]
+                        )
+                    ),
+                ),
             ]
         )
 
@@ -97,6 +108,11 @@ def get_compression_config(data_type: str) -> dict:
             "compression_level": 4,
             "use_dictionary": True,
         },
+        "tx": {
+            "compression": "brotli",
+            "compression_level": 4,
+            "use_dictionary": True,
+        },
         "utxo": {
             "compression": "brotli",
             "compression_level": 4,
@@ -132,6 +148,18 @@ def extract_transaction_raw_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any
 
 def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
     """Extract relevant data for tx.parquet file."""
+    # Extract input references
+    inputs = []
+    if tx.get("inputs"):
+        for input_utxo in tx["inputs"]:
+            # Input format from Ogmios: {"transaction": {"id": "..."}, "index": 0}
+            if "transaction" in input_utxo and "id" in input_utxo["transaction"]:
+                tx_id = input_utxo["transaction"]["id"]
+                output_index = input_utxo.get("index", 0)
+                inputs.append(
+                    {"tx_id": bytes.fromhex(tx_id), "output_index": output_index}
+                )
+
     # TODO: block height
     # TODO: ref inputs
     return {
@@ -139,6 +167,7 @@ def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
         "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
         "tx_fee": tx.get("fee", {}).get("ada", {}).get("lovelace", 0),
         "input_count": len(tx.get("inputs", [])),
+        "inputs": inputs,
         "output_count": len(tx.get("outputs", [])),
         "redeemer_count": len(tx.get("redeemers", [])),
         "has_mint": bool(tx.get("mint", [])),
