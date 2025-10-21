@@ -55,6 +55,10 @@ TODO: add slot to all parquet files?
   - `asset_name`: BYTE_ARRAY
   - `quantity`: INT64
 
+Remark that if we also store the address in the asset table in addition to the utxo table, it increases the asset parquet files by 30% approximately.
+And overall, without raw tx, it’s a 2% size increase.
+So the question to duplicate or not the address info into the asset table depends if we always want to know the address or not.
+
 - `mint.parquet`:
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
   - `policy_id`: FIXED_LEN_BYTE_ARRAY(28)

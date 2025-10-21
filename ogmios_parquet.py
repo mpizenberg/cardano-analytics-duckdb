@@ -80,6 +80,7 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
                 pa.field("slot", pa.uint64()),
                 pa.field("tx_id", pa.binary(32)),
                 pa.field("output_index", pa.uint16()),
+                pa.field("address", pa.dictionary(pa.int32(), pa.string())),
                 pa.field("policy_id", pa.binary(28)),
                 pa.field("asset_name", pa.binary()),
                 pa.field("amount", pa.uint64()),
@@ -225,6 +226,7 @@ def extract_asset_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
     if tx.get("outputs"):
         for output_index, output in enumerate(tx["outputs"]):
             value = output.get("value", {})
+            address = output.get("address", "")
             # Skip if no assets (only ADA)
             if len(value) <= 1:
                 continue
@@ -238,6 +240,7 @@ def extract_asset_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
                         "slot": slot,
                         "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
                         "output_index": output_index,
+                        "address": address,
                         "policy_id": bytes.fromhex(policy_id),
                         "asset_name": bytes.fromhex(asset_name),
                         "amount": amount,
