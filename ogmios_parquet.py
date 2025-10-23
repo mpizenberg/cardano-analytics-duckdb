@@ -61,6 +61,7 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
                 pa.field("lovelace", pa.uint64()),
                 pa.field("has_token", pa.bool_()),
                 pa.field("has_datum", pa.bool_()),  # either hash or inline
+                # TODO: improve by storing script hash instead of bool
                 pa.field("has_ref_script", pa.bool_()),
             ]
         )

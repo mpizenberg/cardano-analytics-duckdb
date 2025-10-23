@@ -5,6 +5,17 @@ from typing import Optional, Dict, Any
 import argparse
 
 
+def slot_to_posix_ms_mainnet(slot: int) -> int:
+    shelley_start = 4_492_800
+    slot_length = 1_000
+    if slot >= shelley_start:
+        return 1_596_059_091_000 + (slot - shelley_start) * slot_length
+    else:
+        # Byron
+        slot_length = 20_000
+        return 1_506_203_091_000 + slot * slot_length
+
+
 class TokenFeeAnalyzer:
     """
     Analyzer for querying token transactions and aggregating fees using DuckDB.
