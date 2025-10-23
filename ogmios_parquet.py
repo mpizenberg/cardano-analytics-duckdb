@@ -8,6 +8,7 @@ from tqdm import tqdm
 from config import ExtractionConfig
 import uuid
 from collections import defaultdict
+import hashlib
 
 
 def get_parquet_schema(data_type: str) -> pa.Schema:
@@ -30,6 +31,7 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
                 pa.field("input_count", pa.uint16()),
                 pa.field("output_count", pa.uint16()),
                 pa.field("redeemer_count", pa.uint16()),
+                pa.field("witness_datum_count", pa.uint16()),
                 pa.field("has_mint", pa.bool_()),
                 pa.field("has_withdrawal", pa.bool_()),
                 pa.field("has_cert", pa.bool_()),
@@ -58,7 +60,7 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
                 pa.field("address", pa.dictionary(pa.int32(), pa.string())),
                 pa.field("lovelace", pa.uint64()),
                 pa.field("has_token", pa.bool_()),
-                pa.field("has_datum", pa.bool_()),
+                pa.field("has_datum", pa.bool_()),  # either hash or inline
                 pa.field("has_ref_script", pa.bool_()),
             ]
         )
@@ -84,6 +86,18 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
                 pa.field("policy_id", pa.binary(28)),
                 pa.field("asset_name", pa.binary()),
                 pa.field("amount", pa.uint64()),
+            ]
+        )
+
+    elif data_type == "datum":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("output_index", pa.uint16()),
+                pa.field("datum_hash", pa.binary(32)),
+                pa.field("is_inline", pa.bool_()),
+                pa.field("inline_datum", pa.binary()),
             ]
         )
 
@@ -120,6 +134,11 @@ def get_compression_config(data_type: str) -> dict:
             "use_dictionary": True,
         },
         "asset": {
+            "compression": "brotli",
+            "compression_level": 4,
+            "use_dictionary": True,
+        },
+        "datum": {
             "compression": "brotli",
             "compression_level": 4,
             "use_dictionary": True,
@@ -171,6 +190,7 @@ def extract_transaction_data(tx: Dict[str, Any], slot: int) -> Dict[str, Any]:
         "inputs": inputs,
         "output_count": len(tx.get("outputs", [])),
         "redeemer_count": len(tx.get("redeemers", [])),
+        "witness_datum_count": len(tx.get("datums", [])),
         "has_mint": bool(tx.get("mint", [])),
         "has_withdrawal": bool(tx.get("withdrawals", [])),
         "has_cert": bool(tx.get("certificates", [])),
@@ -187,6 +207,8 @@ def extract_utxo_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
         for i, output in enumerate(tx["outputs"]):
             value = output.get("value", {})
             address = output.get("address", "")
+            has_datum_hash = bool(output.get("datumHash"))
+            has_inline_datum = bool(output.get("datum"))
             utxo = {
                 "slot": slot,
                 "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
@@ -194,7 +216,7 @@ def extract_utxo_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
                 "address": address,
                 "lovelace": value.get("ada", {}).get("lovelace", 0),
                 "has_token": len(value) > 1,
-                "has_datum": bool(output.get("datum")),
+                "has_datum": has_datum_hash or has_inline_datum,
                 "has_ref_script": bool(output.get("script")),
             }
             utxos.append(utxo)
@@ -248,6 +270,43 @@ def extract_asset_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
                     asset_records.append(asset_record)
 
     return asset_records
+
+
+def blake2b_256(data: bytes) -> bytes:
+    return hashlib.blake2b(data, digest_size=32).digest()
+
+
+def get_hash_256(hex_hash: str | None, hex: str | None) -> bytes | None:
+    if hex_hash is not None:
+        return bytes.fromhex(hex_hash)
+    elif hex is not None:
+        return blake2b_256(bytes.fromhex(hex))
+    else:
+        return None
+
+
+def extract_datum_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
+    """Extract datum data for datum.parquet file."""
+    datum_records = []
+    if tx.get("outputs"):
+        for output_index, output in enumerate(tx["outputs"]):
+            datum_hash_hex = output.get("datumHash")
+            datum_hex = output.get("datum")
+            if bool(datum_hex) or bool(datum_hash_hex):
+                datum_hash = get_hash_256(datum_hash_hex, datum_hex)
+                asset_record = {
+                    "slot": slot,
+                    "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
+                    "output_index": output_index,
+                    "datum_hash": datum_hash,
+                    "is_inline": datum_hex is not None,
+                    "inline_datum": bytes.fromhex(datum_hex)
+                    if datum_hex is not None
+                    else None,
+                }
+                datum_records.append(asset_record)
+
+    return datum_records
 
 
 def extract_certificate_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
@@ -386,6 +445,7 @@ def extract_transactions(config: ExtractionConfig):
             "utxo": {"file": "utxo.parquet"},
             "mint": {"file": "mint.parquet"},
             "asset": {"file": "asset.parquet"},
+            "datum": {"file": "datum.parquet"},
             "cert": {"file": "cert.parquet"},
         }
 
@@ -472,6 +532,7 @@ def extract_transactions(config: ExtractionConfig):
                                 utxo_data = extract_utxo_data(tx, current_slot)
                                 mint_data = extract_mint_data(tx, current_slot)
                                 asset_data = extract_asset_data(tx, current_slot)
+                                datum_data = extract_datum_data(tx, current_slot)
                                 cert_data = extract_certificate_data(tx, current_slot)
 
                                 # Initialize slot group buffer if it doesn't exist
@@ -482,6 +543,7 @@ def extract_transactions(config: ExtractionConfig):
                                         "utxo": [],
                                         "mint": [],
                                         "asset": [],
+                                        "datum": [],
                                         "cert": [],
                                     }
 
@@ -502,6 +564,10 @@ def extract_transactions(config: ExtractionConfig):
                                 if asset_data:
                                     data_buffers[slot_group_dir]["asset"].extend(
                                         asset_data
+                                    )
+                                if datum_data:
+                                    data_buffers[slot_group_dir]["datum"].extend(
+                                        datum_data
                                     )
                                 if cert_data:
                                     data_buffers[slot_group_dir]["cert"].extend(

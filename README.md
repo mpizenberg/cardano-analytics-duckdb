@@ -12,6 +12,7 @@ Inside each folder, we will have the following files:
 - `cert.parquet` containing basic information about certificates in transactions
 - `vote.parquet` containing basic information about votes in transactions
 - `proposal.parquet` containing basic information about proposals in transactions
+- `datum.parquet` containing basic information about datums in UTxOs
 - `redeemer.parquet` containing basic information about redeemers in transactions
 
 ## Parquet Schemas
@@ -85,6 +86,14 @@ So the question to duplicate or not the address info into the asset table depend
   - `return_account`: ASCII STRING
   - `type`: INT32
   - `anchor`: ASCII STRING
+
+- `datum.parquet`:
+  - `slot`: INT64
+  - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
+  - `output_index`: INT32
+  - `datum_hash`: FIXED_LEN_BYTE_ARRAY(32)
+  - `is_inline`: BOOLEAN
+  - `inline_datum`: BYTE_ARRAY
 
 - `redeemer.parquet`:
   - `tx_id`: FIXED_LEN_BYTE_ARRAY(32)
