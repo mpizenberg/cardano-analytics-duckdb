@@ -315,7 +315,29 @@ def extract_certificate_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, An
     certificates = []
     if tx.get("certificates"):
         for i, cert in enumerate(tx["certificates"]):
-            cert_type = cert.get("type", "unknown")
+            # Possible cert_type values from Ogmios:
+            # - stakeDelegation
+            #   - credential, stakePool.id, delegateRepresentative
+            # - stakeCredentialRegistration
+            #   - credential
+            # - stakeCredentialDeregistration
+            #   - credential
+            # - stakePoolRegistration (contains lots of stuff, might need separate table?)
+            #   - stakePool.{id, margin, pledge}
+            # - stakePoolRetirement
+            #   - stakePool.{id, .retirementEpoch}
+            # - genesisDelegation
+            # - constitutionalCommitteeDelegation
+            #   - member.id, delegate.id
+            # - constitutionalCommitteeRetirement
+            #   - member.id, metadata.{hash, url}
+            # - delegateRepresentativeRegistration
+            #   - delegateRepresentative.id, metadata.{hash, url}
+            # - delegateRepresentativeUpdate
+            #   - delegateRepresentative.id, metadata.{hash, url}
+            # - delegateRepresentativeRetirement
+            #   - delegateRepresentative.id
+            cert_type = cert.get("type", "")
             cert_data = {
                 "slot": slot,
                 "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
