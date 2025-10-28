@@ -165,6 +165,8 @@ class TokenFeeAnalyzer:
         """
 
         print("Executing UTXO query...")
+        print(query)
+        print("--------")
         result = self.conn.execute(query).fetchdf()
         print(f"Found {len(result)} UTXOs containing the token")
 

@@ -66,6 +66,10 @@ PRESET_STARTING_POINTS = {
         slot=137747713,
         id="1a599f87191e73b43e71751ece3666ede768c07fd664b85056306d656b022bcc",
     ),
+    "block_2025_10_28": ogmios.Point(
+        slot=170099400,
+        id="a603a4b4ac4b077596bfa551648ba1f3fd3f8fd4f8f7818cea8dc917ea1cfd4c",
+    ),
 }
 
 
