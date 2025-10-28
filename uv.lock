@@ -200,7 +200,7 @@ requires-dist = [
     { name = "bech32", specifier = ">=1.2.0" },
     { name = "duckdb", specifier = ">=1.4.0" },
     { name = "networkx", specifier = ">=3.4.2" },
-    { name = "ogmios", specifier = ">=1.4.2" },
+    { name = "ogmios", git = "https://gitlab.com/viperscience/ogmios-python.git?rev=fix-blockpraos-era" },
     { name = "pandas", specifier = ">=2.0.0" },
     { name = "polars", specifier = ">=1.34.0" },
     { name = "pyarrow", specifier = ">=15.0.0" },
@@ -410,7 +410,7 @@ wheels = [
 [[package]]
 name = "ogmios"
 version = "1.4.2"
-source = { registry = "https://pypi.org/simple" }
+source = { git = "https://gitlab.com/viperscience/ogmios-python.git?rev=fix-blockpraos-era#cc7d61c831162978121ea2be6bb2d1a978b8ccd0" }
 dependencies = [
     { name = "cachetools" },
     { name = "cardano-tools" },
@@ -419,10 +419,6 @@ dependencies = [
     { name = "pydantic" },
     { name = "setuptools" },
     { name = "websockets" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/f7/67c3299bf1ccaa42f356a0617a4e4e9e2ac625a0c22be683695438ee10d9/ogmios-1.4.2.tar.gz", hash = "sha256:2fe041b9685c4219c4f5ff9bf3ad38d3558a4d4705c5fec48638b530708daa3a", size = 115131, upload-time = "2025-03-28T02:59:11.359Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/55/44bb9465cecaf6575d936e6cf4acdeaf129d4751c2a99cc3f6a512e067e8/ogmios-1.4.2-py3-none-any.whl", hash = "sha256:b66f9187ceb8d7c22f8eff40eb4470ecd1e7b4abaf6f49fc41d6912219d39676", size = 128947, upload-time = "2025-03-28T02:59:12.474Z" },
 ]
 
 [[package]]

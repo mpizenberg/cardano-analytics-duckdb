@@ -50,10 +50,6 @@ PRESET_STARTING_POINTS = {
         slot=72316796,
         id="c58a24ba8203e7629422a24d9dc68ce2ed495420bf40d9dab124373655161a20",
     ),
-    "last_babbage": ogmios.Point(
-        slot=133660799,
-        id="e757d57eb8dc9500a61c60a39fadb63d9be6973ba96ae337fd24453d4d15c343",
-    ),
     "snek_mint": ogmios.Point(
         slot=90914081,
         id="2f7784ab8eee0e3d81223b9bd482195617cbee662ed6c412b123568251aac67a",
@@ -61,6 +57,14 @@ PRESET_STARTING_POINTS = {
     "snek_mint_plus_100K_blocks": ogmios.Point(
         slot=92961183,
         id="055d7e5660fcfb8bede7eee40d55456030ba51a41d57d85fcea9a820644991b2",
+    ),
+    "last_babbage": ogmios.Point(
+        slot=133660799,
+        id="e757d57eb8dc9500a61c60a39fadb63d9be6973ba96ae337fd24453d4d15c343",
+    ),
+    "last_babbage_plus_200K_blocks": ogmios.Point(
+        slot=137747713,
+        id="1a599f87191e73b43e71751ece3666ede768c07fd664b85056306d656b022bcc",
     ),
 }
 

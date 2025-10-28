@@ -107,8 +107,65 @@ def get_parquet_schema(data_type: str) -> pa.Schema:
             [
                 pa.field("slot", pa.uint64()),
                 pa.field("tx_id", pa.binary(32)),
-                pa.field("index", pa.uint16()),
                 pa.field("type", pa.dictionary(pa.int8(), pa.string())),
+            ]
+        )
+
+    elif data_type == "cert_stake":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("type", pa.dictionary(pa.int8(), pa.string())),
+                pa.field("credential", pa.binary(28)),
+                pa.field("pool_id", pa.string()),
+                pa.field("drep_id", pa.string()),
+            ]
+        )
+
+    elif data_type == "cert_pool":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("type", pa.dictionary(pa.int8(), pa.string())),
+                pa.field("pool_id", pa.string()),
+                pa.field("reward_account", pa.string()),
+                pa.field("pledge", pa.uint64()),
+                pa.field("margin_numerator", pa.uint64()),
+                pa.field("margin_denominator", pa.uint64()),
+                pa.field("cost", pa.uint64()),
+                pa.field("metadata_hash", pa.binary(32)),
+                pa.field("metadata_url", pa.string()),
+                pa.field("retirement_epoch", pa.uint64()),
+            ]
+        )
+
+    elif data_type == "cert_cc":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("type", pa.dictionary(pa.int8(), pa.string())),
+                pa.field("member_id", pa.binary(28)),
+                pa.field("delegate_id", pa.binary(28)),
+                # retirement reason (optional)
+                pa.field("metadata_hash", pa.binary(32)),
+                pa.field("metadata_url", pa.string()),
+            ]
+        )
+
+    elif data_type == "cert_drep":
+        return pa.schema(
+            [
+                pa.field("slot", pa.uint64()),
+                pa.field("tx_id", pa.binary(32)),
+                pa.field("type", pa.dictionary(pa.int8(), pa.string())),
+                pa.field("drep_id", pa.binary()),
+                # drep_type is "verificationKey" or "script" (only in registration certs)
+                pa.field("drep_type", pa.dictionary(pa.int8(), pa.string())),
+                pa.field("metadata_hash", pa.binary(32)),
+                pa.field("metadata_url", pa.string()),
             ]
         )
 
@@ -310,43 +367,123 @@ def extract_datum_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
     return datum_records
 
 
-def extract_certificate_data(tx: Dict[str, Any], slot: int) -> List[Dict[str, Any]]:
-    """Extract certificate data for cert.parquet file."""
-    certificates = []
-    if tx.get("certificates"):
-        for i, cert in enumerate(tx["certificates"]):
-            # Possible cert_type values from Ogmios:
-            # - stakeDelegation
-            #   - credential, stakePool.id, delegateRepresentative
-            # - stakeCredentialRegistration
-            #   - credential
-            # - stakeCredentialDeregistration
-            #   - credential
-            # - stakePoolRegistration (contains lots of stuff, might need separate table?)
-            #   - stakePool.{id, margin, pledge}
-            # - stakePoolRetirement
-            #   - stakePool.{id, .retirementEpoch}
-            # - genesisDelegation
-            # - constitutionalCommitteeDelegation
-            #   - member.id, delegate.id
-            # - constitutionalCommitteeRetirement
-            #   - member.id, metadata.{hash, url}
-            # - delegateRepresentativeRegistration
-            #   - delegateRepresentative.id, metadata.{hash, url}
-            # - delegateRepresentativeUpdate
-            #   - delegateRepresentative.id, metadata.{hash, url}
-            # - delegateRepresentativeRetirement
-            #   - delegateRepresentative.id
-            cert_type = cert.get("type", "")
-            cert_data = {
-                "slot": slot,
-                "tx_id": bytes.fromhex(tx.get("id", "0" * 64)),
-                "index": i,
-                "type": cert_type,
-            }
-            certificates.append(cert_data)
+def extract_all_certificate_data(
+    tx: Dict[str, Any], slot: int
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Extract certificate data for all cert parquet files."""
+    certs = {
+        "cert": [],
+        "cert_stake": [],
+        "cert_pool": [],
+        "cert_cc": [],
+        "cert_drep": [],
+    }
+    if not tx.get("certificates"):
+        return certs
 
-    return certificates
+    for cert in tx["certificates"]:
+        cert_type = cert.get("type", "")
+        tx_id_bytes = bytes.fromhex(tx.get("id", "0" * 64))
+
+        base_cert_data = {
+            "slot": slot,
+            "tx_id": tx_id_bytes,
+            "type": cert_type,
+        }
+        certs["cert"].append(base_cert_data)
+
+        # Stake certificates
+        if cert_type in (
+            "stakeDelegation",
+            "stakeCredentialRegistration",
+            "stakeCredentialDeregistration",
+        ):
+            credential = bytes.fromhex(tx.get("credential", "0" * 56))
+            stake_cert = {
+                **base_cert_data,
+                "credential": credential,
+                "pool_id": None,
+                "drep_id": None,
+            }
+            if cert_type == "stakeDelegation":
+                stake_cert["pool_id"] = cert.get("stakePool", {}).get("id")
+                drep = cert.get("delegateRepresentative", {})
+                drep_type = drep.get("type", "")
+                drep_id = drep.get("id") if drep_type == "registered" else drep_type
+                stake_cert["drep_id"] = drep_id
+            certs["cert_stake"].append(stake_cert)
+
+        # Pool certificates
+        elif cert_type in ("stakePoolRegistration", "stakePoolRetirement"):
+            pool = cert.get("stakePool", {})
+            pool_cert = {
+                **base_cert_data,
+                "pool_id": pool.get("id"),
+                "reward_account": pool.get("rewardAccount"),
+                "pledge": pool.get("pledge", {}).get("ada", {}).get("lovelace"),
+                "margin_numerator": None,
+                "margin_denominator": None,
+                "cost": pool.get("cost", {}).get("ada", {}).get("lovelace"),
+                "metadata_hash": None,
+                "metadata_url": None,
+                "retirement_epoch": pool.get("retirementEpoch"),
+            }
+            if cert_type == "stakePoolRegistration":
+                margin = pool.get("margin")
+                num_str, denom_str = margin.split("/")
+                pool_cert["margin_numerator"] = int(num_str)
+                pool_cert["margin_denominator"] = int(denom_str)
+                metadata = pool.get("metadata")
+                if metadata is not None:
+                    pool_cert["metadata_hash"] = bytes.fromhex(metadata.get("hash"))
+                    pool_cert["metadata_url"] = metadata.get("url")
+
+            certs["cert_pool"].append(pool_cert)
+
+        # CC certificates
+        elif cert_type in (
+            "constitutionalCommitteeDelegation",
+            "constitutionalCommitteeRetirement",
+        ):
+            cc_cert = {
+                **base_cert_data,
+                "member_id": bytes.fromhex(cert.get("member", {}).get("id", "0" * 56)),
+                "delegate_id": None,
+                "metadata_hash": None,
+                "metadata_url": None,
+            }
+            if cert_type == "constitutionalCommitteeDelegation":
+                delegate = cert.get("delegate", {})
+                # no default "id" because I want to know if it crashes on Nothing
+                # since there is something fishy in the ogmios types.
+                cc_cert["delegate_id"] = bytes.fromhex(delegate.get("id"))
+            metadata = cert.get("metadata")
+            if metadata is not None:
+                cc_cert["metadata_hash"] = bytes.fromhex(metadata.get("hash"))
+                cc_cert["metadata_url"] = metadata.get("url")
+            certs["cert_cc"].append(cc_cert)
+
+        # DRep certificates
+        elif cert_type in (
+            "delegateRepresentativeRegistration",
+            "delegateRepresentativeUpdate",
+            "delegateRepresentativeRetirement",
+        ):
+            drep = cert.get("delegateRepresentative", {})
+            drep_cert = {
+                **base_cert_data,
+                "drep_id": bytes.fromhex(drep.get("id", "0" * 56)),
+                "drep_type": drep.get("from"),
+                "metadata_hash": None,
+                "metadata_url": None,
+            }
+            metadata = cert.get("metadata")
+            if metadata is not None:
+                drep_cert["metadata_hash"] = bytes.fromhex(metadata.get("hash"))
+                drep_cert["metadata_url"] = metadata.get("url")
+            certs["cert_drep"].append(drep_cert)
+
+    return certs
 
 
 def save_to_parquet_uncompressed(
@@ -470,6 +607,10 @@ def extract_transactions(config: ExtractionConfig):
             "asset": {"file": "asset.parquet"},
             "datum": {"file": "datum.parquet"},
             "cert": {"file": "cert.parquet"},
+            "cert_stake": {"file": "cert_stake.parquet"},
+            "cert_pool": {"file": "cert_pool.parquet"},
+            "cert_cc": {"file": "cert_cc.parquet"},
+            "cert_drep": {"file": "cert_drep.parquet"},
         }
 
         # Process each slot group
@@ -556,7 +697,9 @@ def extract_transactions(config: ExtractionConfig):
                                 mint_data = extract_mint_data(tx, current_slot)
                                 asset_data = extract_asset_data(tx, current_slot)
                                 datum_data = extract_datum_data(tx, current_slot)
-                                cert_data = extract_certificate_data(tx, current_slot)
+                                all_cert_data = extract_all_certificate_data(
+                                    tx, current_slot
+                                )
 
                                 # Initialize slot group buffer if it doesn't exist
                                 if slot_group_dir not in data_buffers:
@@ -568,6 +711,10 @@ def extract_transactions(config: ExtractionConfig):
                                         "asset": [],
                                         "datum": [],
                                         "cert": [],
+                                        "cert_stake": [],
+                                        "cert_pool": [],
+                                        "cert_cc": [],
+                                        "cert_drep": [],
                                     }
 
                                 # Add to respective buffers
@@ -592,10 +739,11 @@ def extract_transactions(config: ExtractionConfig):
                                     data_buffers[slot_group_dir]["datum"].extend(
                                         datum_data
                                     )
-                                if cert_data:
-                                    data_buffers[slot_group_dir]["cert"].extend(
-                                        cert_data
-                                    )
+                                for cert_type, cert_list in all_cert_data.items():
+                                    if cert_list:
+                                        data_buffers[slot_group_dir][cert_type].extend(
+                                            cert_list
+                                        )
 
                                 # Flush buffers when needed
                                 slots_since_last_flush = (

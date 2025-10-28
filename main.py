@@ -111,9 +111,11 @@ if __name__ == "__main__":
     else:
         config = ExtractionConfig(
             # start_point=PRESET_STARTING_POINTS["last_alonzo"],
-            start_point=PRESET_STARTING_POINTS["snek_mint"],
+            # start_point=PRESET_STARTING_POINTS["snek_mint"],
+            start_point=PRESET_STARTING_POINTS["last_babbage"],
             # stop_point=PRESET_STARTING_POINTS["snek_mint"],snek_mint_plus_100K_blocks
-            stop_point=PRESET_STARTING_POINTS["snek_mint_plus_100K_blocks"],
+            # stop_point=PRESET_STARTING_POINTS["snek_mint_plus_100K_blocks"],
+            stop_point=PRESET_STARTING_POINTS["last_babbage_plus_200K_blocks"],
         )
         # Override config with command line arguments
         if args.start_point:
