@@ -123,7 +123,7 @@ class TokenFeeAnalyzer:
         Returns:
             DataFrame with all UTXOs containing the token
         """
-        print(f"Searching for UTXOs containing token...")
+        print("Searching for UTXOs containing token...")
         print(f"Policy ID: {policy_id}")
         print(f"Asset Name: {asset_name}")
 
@@ -143,33 +143,15 @@ class TokenFeeAnalyzer:
             slot_filter = f"AND {' AND '.join(conditions)}"
 
         query = f"""
-        SELECT
-            a.slot,
-            a.tx_id,
-            a.output_index,
-            a.policy_id,
-            a.asset_name,
-            a.amount,
-            u.address,
-            u.lovelace
+        SELECT *
         FROM asset_view a
-        JOIN utxo_view u ON (
-            a.tx_id = u.tx_id AND
-            a.output_index = u.output_index AND
-            a.slot = u.slot
-        )
         WHERE a.policy_id = {policy_id_binary}
             AND a.asset_name = {asset_name_binary}
             {slot_filter}
-        ORDER BY a.slot ASC
         """
 
-        print("Executing UTXO query...")
-        print(query)
-        print("--------")
+        print("Pre-selecting assets entries with the relevant token ...")
         result = self.conn.execute(query).fetchdf()
-        print(f"Found {len(result)} UTXOs containing the token")
-
         return result
 
     def find_token_transfers(
@@ -196,7 +178,7 @@ class TokenFeeAnalyzer:
         Returns:
             DataFrame with transaction details including fees
         """
-        print(f"Step-by-step token transfer analysis...")
+        print("Step-by-step token transfer analysis...")
 
         # Step 1: Find all UTXOs containing the token
         token_utxos = self.find_token_utxos(policy_id, asset_name, min_slot, max_slot)
@@ -208,85 +190,67 @@ class TokenFeeAnalyzer:
         print(f"Step 1 complete: Found {len(token_utxos)} UTXOs containing the token")
 
         # Step 2: Find all transactions that either create or consume these UTXOs
-        print("Step 2: Finding transactions that involve these UTXOs...")
+        self.conn.register("token_utxos_view", token_utxos)
 
-        # Convert hex strings to binary format for querying
-        # Use unhex() function to properly convert hex strings to binary data
-        policy_id_binary = f"unhex('{policy_id}')"
-        asset_name_binary = f"unhex('{asset_name}')"
+        print(
+            "Step 2: Finding transactions that involve these UTXOs and ownership changes..."
+        )
 
-        # Base slot filter
-        slot_filter = ""
-        if min_slot is not None or max_slot is not None:
-            conditions = []
-            if min_slot is not None:
-                conditions.append(f"t.slot >= {min_slot}")
-            if max_slot is not None:
-                conditions.append(f"t.slot <= {max_slot}")
-            slot_filter = f"AND {' AND '.join(conditions)}"
-
-        query = f"""
+        query = """
         WITH relevant_txs AS (
-            -- All transactions with the token in outputs
-            SELECT DISTINCT a.tx_id, t.slot, t.tx_fee
-            FROM asset_view a
-            JOIN tx_view t ON a.tx_id = t.tx_id
-            WHERE a.policy_id = {policy_id_binary}
-              AND a.asset_name = {asset_name_binary}
-              {slot_filter if slot_filter else ""}
+            SELECT
+              slot,
+              tx_id,
+              tx_fee,
+              inputs,
+            FROM tx_view
+            WHERE tx_id IN (SELECT DISTINCT tx_id FROM token_utxos_view)
         ),
 
         input_addresses AS (
-            -- Addresses of input UTxOs holding that token
+            -- Addresses of input UTxOs holding that token.
+            -- We join the transaction inputs against our pre-filtered token_utxos_view.
             SELECT
                 tx.tx_id,
-                ARRAY_SORT(ARRAY_AGG(DISTINCT u_in.address)) AS input_addr_set
-            FROM tx_view tx,
-                 UNNEST(tx.inputs) AS t(input_ref)
-            JOIN asset_view a_in
-              ON a_in.tx_id = input_ref.tx_id
-             AND a_in.output_index = input_ref.output_index
-             AND a_in.policy_id = {policy_id_binary}
-             AND a_in.asset_name = {asset_name_binary}
-            JOIN utxo_view u_in
-              ON u_in.tx_id = a_in.tx_id
-             AND u_in.output_index = a_in.output_index
+                ARRAY_SORT(ARRAY_AGG(DISTINCT tu.address)) AS input_addr_set
+            FROM relevant_txs tx,
+                 UNNEST(tx.inputs) AS t_in(input_ref)
+            JOIN token_utxos_view tu
+              ON tu.tx_id = input_ref.tx_id
+             AND tu.output_index = input_ref.output_index
             GROUP BY tx.tx_id
         ),
 
         output_addresses AS (
-            -- Addresses of output UTxOs holding that token
+            -- Addresses of output UTxOs holding that token, from pre-filtered token_utxos
             SELECT
-                a_out.tx_id,
-                ARRAY_SORT(ARRAY_AGG(DISTINCT u_out.address)) AS output_addr_set
-            FROM asset_view a_out
-            JOIN utxo_view u_out
-              ON u_out.tx_id = a_out.tx_id
-             AND u_out.output_index = a_out.output_index
-            WHERE a_out.policy_id = {policy_id_binary}
-              AND a_out.asset_name = {asset_name_binary}
-            GROUP BY a_out.tx_id
+                tx_id,
+                ARRAY_SORT(ARRAY_AGG(DISTINCT address)) AS output_addr_set
+            FROM token_utxos_view
+            GROUP BY tx_id
         )
 
         SELECT
             tx.slot,
             tx.tx_id,
             tx.tx_fee,
-            input_addresses.input_addr_set,
-            output_addresses.output_addr_set
+            i.input_addr_set,
+            o.output_addr_set
         FROM relevant_txs tx
-        LEFT JOIN input_addresses USING (tx_id)
-        LEFT JOIN output_addresses USING (tx_id)
-        WHERE input_addresses.input_addr_set <> output_addresses.output_addr_set
+        LEFT JOIN input_addresses i ON tx.tx_id = i.tx_id
+        LEFT JOIN output_addresses o ON tx.tx_id = o.tx_id
+        WHERE i.input_addr_set IS DISTINCT FROM o.output_addr_set
         ORDER BY tx.slot ASC;
         """
 
-        print("Executing preliminary transaction query...")
+        print("Executing transaction analysis query...")
         result = self.conn.execute(query).fetchdf()
-        print(f"Found {len(result)} transactions that involve token UTXOs")
+        print(f"Found {len(result)} transfer transactions.")
+
+        self.conn.unregister("token_utxos_view")
 
         if len(result) == 0:
-            print("No transactions found that involve these UTXOs!")
+            print("No ownership-changing transactions found for this token!")
             return pd.DataFrame()
 
         return result
