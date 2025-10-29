@@ -104,15 +104,18 @@ class TokenFeeAnalyzer:
 
         return known_tokens.get(token_name.lower())
 
-    def find_token_utxos(
+    def find_token_utxos_query(
         self,
         policy_id: str,
         asset_name: str,
         min_slot: Optional[int] = None,
         max_slot: Optional[int] = None,
-    ) -> pd.DataFrame:
+    ) -> str:
         """
-        Find all UTXOs containing a specific token for debugging purposes.
+        Create a temporary view of UTXOs containing a specific token.
+
+        This is memory-efficient as it keeps the data within DuckDB instead
+        of loading it into a Pandas DataFrame.
 
         Args:
             policy_id: The policy ID of the token (hex string)
@@ -121,38 +124,32 @@ class TokenFeeAnalyzer:
             max_slot: Optional maximum slot number to filter by
 
         Returns:
-            DataFrame with all UTXOs containing the token
+            The SQL query with token utxos addresses.
         """
-        print("Searching for UTXOs containing token...")
-        print(f"Policy ID: {policy_id}")
-        print(f"Asset Name: {asset_name}")
-
-        # Convert hex strings to binary format for querying
-        # Use unhex() function to properly convert hex strings to binary data
+        print("Creating a temporary view of UTXOs containing token...")
         policy_id_binary = f"unhex('{policy_id}')"
         asset_name_binary = f"unhex('{asset_name}')" if asset_name else "NULL"
 
-        # Base query to find all UTXOs with the token
         slot_filter = ""
         if min_slot is not None or max_slot is not None:
             conditions = []
             if min_slot is not None:
-                conditions.append(f"a.slot >= {min_slot}")
+                conditions.append(f"slot >= {min_slot}")
             if max_slot is not None:
-                conditions.append(f"a.slot <= {max_slot}")
+                conditions.append(f"slot <= {max_slot}")
             slot_filter = f"AND {' AND '.join(conditions)}"
 
-        query = f"""
-        SELECT *
-        FROM asset_view a
-        WHERE a.policy_id = {policy_id_binary}
-            AND a.asset_name = {asset_name_binary}
+        # Create a temporary view with only the required columns.
+        # This avoids loading the whole dataset into memory.
+        utxo_query = f"""
+        CREATE OR REPLACE TEMP VIEW token_utxos_addresses AS
+        SELECT tx_id, output_index, address
+        FROM asset_view
+        WHERE policy_id = {policy_id_binary}
+            AND asset_name = {asset_name_binary}
             {slot_filter}
         """
-
-        print("Pre-selecting assets entries with the relevant token ...")
-        result = self.conn.execute(query).fetchdf()
-        return result
+        return utxo_query
 
     def find_token_transfers(
         self,
@@ -181,17 +178,25 @@ class TokenFeeAnalyzer:
         print("Step-by-step token transfer analysis...")
 
         # Step 1: Find all UTXOs containing the token
-        token_utxos = self.find_token_utxos(policy_id, asset_name, min_slot, max_slot)
+        # Create the token_utxos_addresses view
+        token_utxos_query = self.find_token_utxos_query(
+            policy_id, asset_name, min_slot, max_slot
+        )
+        self.conn.execute(token_utxos_query)
 
-        if len(token_utxos) == 0:
+        # Check if any UTXOs were found to avoid running a heavy query for nothing
+        req = self.conn.execute("SELECT COUNT(*) FROM token_utxos_addresses").fetchone()
+        token_utxos_count = req[0] if req is not None else 0
+
+        if token_utxos_count == 0:
             print("No UTXOs found containing this token!")
+            self.conn.execute("DROP VIEW token_utxos_addresses")
             return pd.DataFrame()
 
-        print(f"Step 1 complete: Found {len(token_utxos)} UTXOs containing the token")
+        print(f"Step 1 complete: Found {token_utxos_count} UTXOs containing the token")
 
         # Step 2: Find all transactions that either create or consume these UTXOs
-        self.conn.register("token_utxos_view", token_utxos)
-
+        # The previous query view was saved as "token_utxos_addresses"
         print(
             "Step 2: Finding transactions that involve these UTXOs and ownership changes..."
         )
@@ -204,18 +209,18 @@ class TokenFeeAnalyzer:
               tx_fee,
               inputs,
             FROM tx_view
-            WHERE tx_id IN (SELECT DISTINCT tx_id FROM token_utxos_view)
+            WHERE tx_id IN (SELECT DISTINCT tx_id FROM token_utxos_addresses)
         ),
 
         input_addresses AS (
             -- Addresses of input UTxOs holding that token.
-            -- We join the transaction inputs against our pre-filtered token_utxos_view.
+            -- We join the transaction inputs against our pre-filtered token_utxos_addresses.
             SELECT
                 tx.tx_id,
                 ARRAY_SORT(ARRAY_AGG(DISTINCT tu.address)) AS input_addr_set
             FROM relevant_txs tx,
                  UNNEST(tx.inputs) AS t_in(input_ref)
-            JOIN token_utxos_view tu
+            JOIN token_utxos_addresses tu
               ON tu.tx_id = input_ref.tx_id
              AND tu.output_index = input_ref.output_index
             GROUP BY tx.tx_id
@@ -226,7 +231,7 @@ class TokenFeeAnalyzer:
             SELECT
                 tx_id,
                 ARRAY_SORT(ARRAY_AGG(DISTINCT address)) AS output_addr_set
-            FROM token_utxos_view
+            FROM token_utxos_addresses
             GROUP BY tx_id
         )
 
@@ -243,11 +248,11 @@ class TokenFeeAnalyzer:
         ORDER BY tx.slot ASC;
         """
 
-        print("Executing transaction analysis query...")
+        print("Executing Tx address changes analysis query...")
         result = self.conn.execute(query).fetchdf()
-        print(f"Found {len(result)} transfer transactions.")
+        print(f"Found {len(result)} relevant transactions with address changes.")
 
-        self.conn.unregister("token_utxos_view")
+        self.conn.unregister("token_utxos_addresses")
 
         if len(result) == 0:
             print("No ownership-changing transactions found for this token!")
@@ -382,77 +387,6 @@ class TokenFeeAnalyzer:
         print(
             f"Transactions filtered out due to missing input UTXOs are reported separately."
         )
-
-    def test_token_analysis(self, token_name: str) -> Dict[str, Any]:
-        """
-        Simple test method to debug token analysis step by step.
-
-        Args:
-            token_name: Name of the token to test (e.g., 'snek')
-
-        Returns:
-            Dictionary with debug information
-        """
-        print(f"\n{'=' * 50}")
-        print(f"DEBUGGING TOKEN ANALYSIS: {token_name.upper()}")
-        print(f"{'=' * 50}")
-
-        # Get token info
-        token_info = self.get_token_info(token_name)
-        if not token_info:
-            print(f"ERROR: Unknown token {token_name}")
-            return {"error": f"Unknown token {token_name}"}
-
-        print(f"Policy ID: {token_info['policy_id']}")
-        print(f"Asset Name: {token_info['asset_name']}")
-
-        # Step 1: Test basic UTXO finding
-        print(f"\nStep 1: Finding UTXOs with this token...")
-        token_utxos = self.find_token_utxos(
-            token_info["policy_id"], token_info["asset_name"]
-        )
-
-        debug_info = {
-            "token_name": token_name,
-            "policy_id": token_info["policy_id"],
-            "asset_name": token_info["asset_name"],
-            "utxos_found": len(token_utxos),
-        }
-
-        if len(token_utxos) > 0:
-            # Show some stats about the UTXOs
-            unique_addresses = token_utxos["address"].nunique()
-            unique_txs = token_utxos["tx_id"].nunique()
-            slot_range = (token_utxos["slot"].min(), token_utxos["slot"].max())
-            total_amount = token_utxos["amount"].sum()
-
-            print(f"  UTXOs found: {len(token_utxos)}")
-            print(f"  Unique addresses: {unique_addresses}")
-            print(f"  Unique transactions: {unique_txs}")
-            print(f"  Slot range: {slot_range[0]:,} - {slot_range[1]:,}")
-            print(f"  Total token amount: {total_amount:,}")
-
-            debug_info.update(
-                {
-                    "unique_addresses": unique_addresses,
-                    "unique_transactions": unique_txs,
-                    "slot_range": slot_range,
-                    "total_token_amount": total_amount,
-                }
-            )
-
-            # Show first few UTXOs as sample
-            print(f"\nFirst 5 UTXOs:")
-            sample_utxos = token_utxos.head()
-            for _, utxo in sample_utxos.iterrows():
-                print(
-                    f"  Slot {utxo['slot']:,}: {utxo['amount']:,} tokens at {utxo['address'][:20]}..."
-                )
-
-        print(f"\nDEBUG COMPLETE")
-        print(f"{'=' * 50}")
-
-        return debug_info
 
     def close(self):
         """Close the DuckDB connection."""
